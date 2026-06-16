@@ -1,0 +1,254 @@
+import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { NotificationChannel, NotificationOutbox } from '@prisma/client';
+import { randomUUID } from 'crypto';
+import { hostname } from 'os';
+import { PrismaService } from '../../database/prisma.service';
+import { EmailNotificationProvider } from './email-notification.provider';
+import { NOTIFICATION_SENDER_CONFIG, NotificationSenderConfig } from './notification.config';
+import { NotificationMetrics } from './notification.metrics';
+import { NotificationProvider, PermanentSendError, TransientSendError } from './notification-provider';
+import { TemplateRenderer } from './template-renderer';
+
+/**
+ * Drains PENDING NotificationOutbox rows and delivers them via a provider, using
+ * the same lease-stamp claim as the outbox relay. Delivery is at-least-once
+ * (crash after send / before markSent → reclaim → re-send with NotificationOutbox.id
+ * as the provider idempotency key → exactly-once delivery effect). A circuit
+ * breaker pauses sends on sustained transient/infra failure (F3).
+ */
+@Injectable()
+export class NotificationSenderWorker implements OnApplicationBootstrap, OnModuleDestroy {
+  private readonly logger = new Logger('NotificationSenderWorker');
+  private readonly workerId = `${hostname()}:${process.pid}`;
+
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private stopped = false;
+  private inFlight: Promise<void> | null = null;
+  private lastHealthLogAt = 0;
+
+  private consecutiveTransient = 0;
+  private pausedUntil = 0;
+
+  // Overridable seams for deterministic tests.
+  private nowMs: () => number = () => Date.now();
+  private randomFn: () => number = Math.random;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly email: EmailNotificationProvider,
+    private readonly renderer: TemplateRenderer,
+    private readonly metrics: NotificationMetrics,
+    @Inject(NOTIFICATION_SENDER_CONFIG) private readonly config: NotificationSenderConfig,
+  ) {}
+
+  onApplicationBootstrap(): void {
+    if (!this.config.enabled) {
+      this.logger.log('Notification sender disabled (NOTIFICATION_SENDER_ENABLED=false)');
+      return;
+    }
+    this.logger.log(`Notification sender starting (worker=${this.workerId}, batch=${this.config.batchSize})`);
+    this.scheduleNext(0);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.stopped = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight) {
+      try {
+        await this.inFlight;
+      } catch {
+        // already logged
+      }
+    }
+  }
+
+  private scheduleNext(delayMs: number): void {
+    if (this.stopped) return;
+    this.timer = setTimeout(() => void this.runTick(), delayMs);
+    this.timer.unref();
+  }
+
+  private async runTick(): Promise<void> {
+    if (this.stopped || this.running) return;
+    this.running = true;
+    let processed = 0;
+    this.inFlight = (async () => {
+      try {
+        await this.maybeLogHealth();
+        if (this.isPaused()) return; // breaker open → skip this tick
+        processed = await this.processBatch();
+      } catch (err) {
+        // Tick-level failure (e.g. DB down during claim) — infra transient.
+        this.logger.error(`sender tick failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.tripBreaker();
+      }
+    })();
+    await this.inFlight;
+    this.inFlight = null;
+    this.running = false;
+    const delay = processed >= this.config.batchSize ? 0 : this.config.pollIntervalMs;
+    this.scheduleNext(delay);
+  }
+
+  async processBatch(): Promise<number> {
+    const rows = await this.claimBatch();
+    this.metrics.claimed(rows.length);
+    for (const row of rows) {
+      await this.sendRow(row);
+    }
+    return rows.length;
+  }
+
+  private async claimBatch(): Promise<NotificationOutbox[]> {
+    const claimToken = `${this.workerId}#${randomUUID()}`;
+    const now = new Date(this.nowMs());
+    const leaseExpiry = new Date(this.nowMs() + this.config.leaseMs);
+    const limit = Math.trunc(this.config.batchSize);
+
+    await this.prisma.$executeRawUnsafe(
+      'UPDATE `NotificationOutbox` SET `lockedUntil` = ?, `lockedBy` = ? ' +
+        "WHERE `status` = 'PENDING' AND `nextAttemptAt` <= ? " +
+        'AND (`lockedUntil` IS NULL OR `lockedUntil` < ?) ' +
+        `ORDER BY \`nextAttemptAt\` ASC LIMIT ${limit}`,
+      leaseExpiry,
+      claimToken,
+      now,
+      now,
+    );
+
+    return this.prisma.notificationOutbox.findMany({
+      where: { lockedBy: claimToken, status: 'PENDING' },
+      orderBy: { nextAttemptAt: 'asc' },
+    });
+  }
+
+  async sendRow(row: NotificationOutbox): Promise<void> {
+    try {
+      const provider = this.providerFor(row.channel);
+      const rendered = this.renderer.render(row.template, (row.payload as Record<string, unknown>) ?? {});
+      const result = await provider.send({
+        channel: row.channel,
+        recipient: row.recipient,
+        subject: rendered.subject,
+        body: rendered.body,
+        idempotencyKey: row.id, // provider idempotency key
+      });
+      await this.markSent(row, result.providerMessageId);
+      this.metrics.sent();
+      this.resetBreaker();
+    } catch (err) {
+      if (err instanceof PermanentSendError) {
+        await this.markFailed(row, err);
+        this.metrics.failedPermanent();
+        return;
+      }
+      this.tripBreaker();
+      await this.scheduleRetry(row, err);
+    }
+  }
+
+  private providerFor(channel: NotificationChannel): NotificationProvider {
+    if (channel === NotificationChannel.EMAIL) return this.email;
+    throw new PermanentSendError(`No provider for channel ${channel}`);
+  }
+
+  private async markSent(row: NotificationOutbox, providerMessageId: string): Promise<void> {
+    await this.prisma.notificationOutbox.update({
+      where: { id: row.id },
+      data: {
+        status: 'SENT',
+        sentAt: new Date(this.nowMs()),
+        providerMessageId,
+        lockedUntil: null,
+        lockedBy: null,
+        lastError: null,
+      },
+    });
+  }
+
+  private async markFailed(row: NotificationOutbox, err: unknown): Promise<void> {
+    const message = (err instanceof Error ? err.message : String(err)).slice(0, 1000);
+    await this.prisma.notificationOutbox.update({
+      where: { id: row.id },
+      data: { status: 'FAILED', attempts: row.attempts + 1, lastError: message, lockedUntil: null, lockedBy: null },
+    });
+    this.logger.error(`NotificationOutbox ${row.id} permanently FAILED: ${message}`);
+  }
+
+  private async scheduleRetry(row: NotificationOutbox, err: unknown): Promise<void> {
+    const message = (err instanceof Error ? err.message : String(err)).slice(0, 1000);
+    const attempts = row.attempts + 1;
+
+    if (attempts >= this.config.maxAttempts) {
+      await this.prisma.notificationOutbox.update({
+        where: { id: row.id },
+        data: { status: 'FAILED', attempts, lastError: message, lockedUntil: null, lockedBy: null },
+      });
+      this.metrics.failedExhausted();
+      this.logger.error(`NotificationOutbox ${row.id} FAILED after ${attempts} attempts: ${message}`);
+      return;
+    }
+
+    // Honor a provider-suggested Retry-After (e.g. 429), else exponential backoff.
+    const retryAfterMs = err instanceof TransientSendError ? err.retryAfterMs : undefined;
+    const delay = retryAfterMs ?? this.backoffDelayMs(attempts);
+    await this.prisma.notificationOutbox.update({
+      where: { id: row.id },
+      data: { attempts, nextAttemptAt: new Date(this.nowMs() + delay), lastError: message, lockedUntil: null, lockedBy: null },
+    });
+    this.metrics.retried();
+    this.logger.warn(`NotificationOutbox ${row.id} send failed (attempt ${attempts}); retry in ${delay}ms: ${message}`);
+  }
+
+  /** Full-jitter exponential backoff in [0, cap). */
+  private backoffDelayMs(attempts: number): number {
+    const exp = this.config.backoffBaseMs * Math.pow(2, attempts - 1);
+    const capped = Math.min(this.config.backoffCapMs, exp);
+    return Math.floor(this.randomFn() * capped);
+  }
+
+  // ---- circuit breaker (F3) ----
+  private isPaused(): boolean {
+    return this.nowMs() < this.pausedUntil;
+  }
+
+  private tripBreaker(): void {
+    this.consecutiveTransient += 1;
+    if (this.consecutiveTransient >= this.config.breakerThreshold && !this.isPaused()) {
+      this.pausedUntil = this.nowMs() + this.config.pauseMs;
+      this.metrics.senderPaused();
+      this.logger.warn(`Notification sender paused for ${this.config.pauseMs}ms after ${this.consecutiveTransient} transient failures`);
+    }
+  }
+
+  private resetBreaker(): void {
+    if (this.consecutiveTransient > 0 || this.pausedUntil > 0) {
+      this.consecutiveTransient = 0;
+      this.pausedUntil = 0;
+      this.metrics.senderResumed();
+    }
+  }
+
+  private async maybeLogHealth(): Promise<void> {
+    const now = this.nowMs();
+    if (now - this.lastHealthLogAt < this.config.healthLogIntervalMs) return;
+    this.lastHealthLogAt = now;
+
+    const [pending, failed, oldest] = await Promise.all([
+      this.prisma.notificationOutbox.count({ where: { status: 'PENDING' } }),
+      this.prisma.notificationOutbox.count({ where: { status: 'FAILED' } }),
+      this.prisma.notificationOutbox.findFirst({
+        where: { status: 'PENDING' },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      }),
+    ]);
+    const oldestPendingAgeMs = oldest ? now - oldest.createdAt.getTime() : 0;
+    this.metrics.health('sender', { pending, failed, oldestPendingAgeMs });
+    this.logger.log(`sender health: pending_count=${pending} failed_count=${failed} oldest_pending_age_ms=${oldestPendingAgeMs}`);
+  }
+}
