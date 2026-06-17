@@ -10,6 +10,13 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 
 async function bootstrap(): Promise<void> {
+  console.log('cwd=', process.cwd());
+  console.log('NODE_ENV=', process.env.NODE_ENV);
+  console.log('REDIS_URL=', process.env.REDIS_URL);
+
+  process.on('uncaughtException', console.error);
+  process.on('unhandledRejection', console.error);
+
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule,
     { bufferLogs: true },

@@ -22,6 +22,8 @@ const assertProductionSecrets = () => {
 };
 
 export const appConfig = () => {
+  console.log('REDIS_URL=', process.env.REDIS_URL);
+  
   assertProductionSecrets();
 
   return {

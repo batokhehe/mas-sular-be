@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Global, Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config/dist/config.service';
 
 export const QUEUES = {
   payments: 'payments',
@@ -11,9 +12,20 @@ export const QUEUES = {
 @Global()
 @Module({
   imports: [
-    BullModule.forRoot({
-      connection: { url: process.env.REDIS_URL },
-      defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: {
+          url: config.get<string>('REDIS_URL'),
+        },
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 1000,
+          },
+        },
+      }),
     }),
     BullModule.registerQueue(
       { name: QUEUES.payments },
@@ -24,4 +36,4 @@ export const QUEUES = {
   ],
   exports: [BullModule],
 })
-export class QueueModule {}
+export class QueueModule { }
