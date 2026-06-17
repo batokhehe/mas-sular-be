@@ -1,4 +1,4 @@
-import { Controller, Get, Inject } from '@nestjs/common';
+import { Controller, Get, Inject, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ApiTags } from '@nestjs/swagger';
 import { Cache } from 'cache-manager';
@@ -8,6 +8,8 @@ import { PrismaService } from './database/prisma.service';
 @ApiTags('health')
 @Controller({ path: 'health', version: '1' })
 export class HealthController {
+  private readonly logger = new Logger(HealthController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
@@ -20,29 +22,6 @@ export class HealthController {
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     };
-  }
-
-  @Get('redis')
-  async redisTest() {
-    try {
-      console.log('SET');
-
-      await this.cacheManager.set('test', 'hello');
-
-      console.log('GET');
-
-      const value = await this.cacheManager.get('test');
-
-      console.log('VALUE', value);
-
-      return { value };
-    } catch (e) {
-      console.error('CACHE ERROR', e);
-
-      return {
-        error: String(e),
-      };
-    }
   }
 
   @Get('ready')
@@ -61,8 +40,7 @@ export class HealthController {
       const value = await this.cacheManager.get<string>('health-check');
       checks.redis = value === 'ok' ? 'ok' : 'failed';
     } catch (error) {
-      console.error(error);
-
+      this.logger.error(`Redis readiness check failed: ${error instanceof Error ? error.message : String(error)}`);
       checks.redis = 'failed';
     }
 

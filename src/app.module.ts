@@ -48,7 +48,7 @@ import { UploadModule } from './modules/upload/upload.module';
     DatabaseModule,
     CacheInfrastructureModule,
     MetricsModule,
-    // QueueModule,
+    QueueModule,
     OutboxModule,
     NotificationsModule,
     ConsumersModule,
