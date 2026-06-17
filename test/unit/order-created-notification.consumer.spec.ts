@@ -8,7 +8,7 @@ import { ConsumersConfig } from '../../src/infrastructure/consumers/consumers.co
 
 const CONFIG: ConsumersConfig = { enabled: true, rabbitmqUrl: 'amqp://localhost', prefetch: 10, maxAttempts: 5, retryDelayMs: 30_000 };
 const ORDER = { id: 'order-1', user: { email: 'jane@example.com', name: 'Jane' } };
-const EVENT = { name: 'order.created', payload: { orderId: 'order-1', orderNumber: 'BN-1', totalPrice: 30000 } };
+const EVENT = { name: 'order.created', payload: { orderId: 'order-1', orderNumber: 'BMS-1', totalPrice: 30000 } };
 
 function p2002() {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '6.19.3' });

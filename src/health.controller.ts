@@ -4,6 +4,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { Cache } from 'cache-manager';
 import amqp from 'amqplib';
 import { PrismaService } from './database/prisma.service';
+import { amqpErrorInfo, describeAmqpTarget } from './common/diagnostics/amqp-redact';
 
 @ApiTags('health')
 @Controller({ path: 'health', version: '1' })
@@ -50,11 +51,17 @@ export class HealthController {
     const rabbitRequired =
       process.env.OUTBOX_RELAY_ENABLED === 'true' || process.env.CONSUMERS_ENABLED === 'true';
     if (process.env.RABBITMQ_URL) {
+      // TEMP DIAGNOSTICS (remove once staging RabbitMQ is confirmed): log the
+      // credential-free target and the exact error. Status logic is unchanged.
+      const target = describeAmqpTarget(process.env.RABBITMQ_URL);
       try {
+        this.logger.log(`RabbitMQ readiness probe -> ${target}`);
         const connection = await amqp.connect(process.env.RABBITMQ_URL);
         await connection.close();
+        this.logger.log(`RabbitMQ readiness OK -> ${target}`);
         checks.rabbitmq = 'ok';
       } catch (error) {
+        this.logger.error(`RabbitMQ readiness FAILED -> ${target} ${amqpErrorInfo(error)}`);
         checks.rabbitmq = 'failed';
       }
     } else {

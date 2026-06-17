@@ -3,7 +3,7 @@ import { PaymentNotificationConsumer } from '../../src/infrastructure/consumers/
 import { ConsumersConfig } from '../../src/infrastructure/consumers/consumers.config';
 
 const CONFIG: ConsumersConfig = { enabled: true, rabbitmqUrl: 'amqp://localhost', prefetch: 10, maxAttempts: 5, retryDelayMs: 30_000 };
-const ORDER = { id: 'order-1', orderNumber: 'BN-1', user: { email: 'jane@example.com', name: 'Jane' } };
+const ORDER = { id: 'order-1', orderNumber: 'BMS-1', user: { email: 'jane@example.com', name: 'Jane' } };
 const PAID = { name: 'payment.paid', payload: { paymentId: 'pay-1', orderId: 'order-1', amount: 50000 } };
 const FAILED = { name: 'payment.failed', payload: { paymentId: 'pay-1', orderId: 'order-1' } };
 
@@ -48,7 +48,7 @@ describe('PaymentNotificationConsumer', () => {
         recipient: 'jane@example.com',
         template: 'payment.approved',
         sourceMessageId: 'evt-1',
-        payload: expect.objectContaining({ orderId: 'order-1', orderNumber: 'BN-1', customerName: 'Jane', amount: 50000 }),
+        payload: expect.objectContaining({ orderId: 'order-1', orderNumber: 'BMS-1', customerName: 'Jane', amount: 50000 }),
       }),
     });
     expect(prisma.__tx.processedEvent.create).toHaveBeenCalledWith({

@@ -6,14 +6,14 @@ export const CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 export const ORDER_NUMBER_SUFFIX_LENGTH = 8; // 8 symbols x 5 bits = 40 bits of entropy
 
 /**
- * Collision-resistant order number: `BN-YYYYMMDD-XXXXXXXX`, where the suffix is
+ * Collision-resistant order number: `BMS-YYYYMMDD-XXXXXXXX`, where the suffix is
  * a random Crockford Base32 string. The date prefix scopes uniqueness per day
  * and keeps the value human-readable/sortable; the random suffix removes the
  * time-derived collisions of the old `Date.now() % 100000` scheme.
  */
 export function generateOrderNumber(now: Date = new Date()): string {
   const datePart = now.toISOString().slice(0, 10).replaceAll('-', '');
-  return `BN-${datePart}-${randomSuffix(ORDER_NUMBER_SUFFIX_LENGTH)}`;
+  return `BMS-${datePart}-${randomSuffix(ORDER_NUMBER_SUFFIX_LENGTH)}`;
 }
 
 function randomSuffix(length: number): string {

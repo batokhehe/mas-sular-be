@@ -4,7 +4,7 @@ import { PaymentMethod } from '@prisma/client';
 
 const USER = 'user-1';
 const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
-const CREATED_ORDER = { id: 'order-1', orderNumber: 'BN-20260611-12345', totalPrice: 30000, items: [], payment: {} };
+const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: {} };
 
 function dto(over: Partial<CreateOrderDto> = {}): CreateOrderDto {
   return { address_id: 'addr-1', courier: CheckoutCourier.JNE, items: [{ product_id: 'p1', qty: 1 }], ...over };

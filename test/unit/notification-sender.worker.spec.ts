@@ -29,7 +29,7 @@ function row(over: Record<string, unknown> = {}) {
     channel: 'EMAIL',
     recipient: 'a@b.com',
     template: 'order.received',
-    payload: { orderNumber: 'BN-1', customerName: 'Jane', totalPrice: 30000 },
+    payload: { orderNumber: 'BMS-1', customerName: 'Jane', totalPrice: 30000 },
     status: 'PENDING',
     attempts: 0,
     nextAttemptAt: new Date(0),

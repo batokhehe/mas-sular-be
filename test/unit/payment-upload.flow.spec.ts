@@ -17,7 +17,7 @@ function buildPage(opts: { token?: unknown; payment?: unknown } = {}) {
   return { svc, prisma, uploadTokens };
 }
 function pagePayment(over: Record<string, unknown> = {}) {
-  return { id: 'pay-1', status: 'PENDING', amount: 50000, method: 'BANK_TRANSFER', manualBankName: 'BCA', deletedAt: null, order: { orderNumber: 'BN-1' }, ...over };
+  return { id: 'pay-1', status: 'PENDING', amount: 50000, method: 'BANK_TRANSFER', manualBankName: 'BCA', deletedAt: null, order: { orderNumber: 'BMS-1' }, ...over };
 }
 
 // ---------- POST /payments/upload/:token ----------
@@ -41,7 +41,7 @@ describe('Upload landing — getUploadPage', () => {
   it('returns page data for an active token + uploadable payment', async () => {
     const { svc } = buildPage();
     const page = await svc.getUploadPage('raw');
-    expect(page).toEqual({ orderNumber: 'BN-1', amount: 50000, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
+    expect(page).toEqual({ orderNumber: 'BMS-1', amount: 50000, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
   });
 
   it('404s (generic) on an invalid/expired/used token — no enumeration', async () => {

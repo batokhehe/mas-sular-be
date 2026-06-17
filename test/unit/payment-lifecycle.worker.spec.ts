@@ -4,7 +4,7 @@ import { PaymentLifecycleConfig, loadPaymentLifecycleConfig } from '../../src/mo
 const NOW = 1_700_000_000_000;
 const HOUR = 60 * 60 * 1000;
 
-const ORDER = { id: 'order-1', orderNumber: 'BN-1', user: { email: 'jane@example.com', name: 'Jane' } };
+const ORDER = { id: 'order-1', orderNumber: 'BMS-1', user: { email: 'jane@example.com', name: 'Jane' } };
 
 function cfg(over: Partial<PaymentLifecycleConfig> = {}): PaymentLifecycleConfig {
   return {

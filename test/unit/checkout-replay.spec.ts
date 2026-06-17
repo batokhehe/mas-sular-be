@@ -10,9 +10,9 @@ const DTO: CreateOrderDto = {
 };
 
 // The creation-time response stored on the idempotency row.
-const SNAPSHOT = { id: 'order-1', orderNumber: 'BN-20260612-AB12CD34', status: 'PENDING', payment: { status: 'PENDING' } };
+const SNAPSHOT = { id: 'order-1', orderNumber: 'BMS-20260612-AB12CD34', status: 'PENDING', payment: { status: 'PENDING' } };
 // The current state of the same order at replay time.
-const LATEST = { id: 'order-1', orderNumber: 'BN-20260612-AB12CD34', status: 'PROCESSING', payment: { status: 'PAID' } };
+const LATEST = { id: 'order-1', orderNumber: 'BMS-20260612-AB12CD34', status: 'PROCESSING', payment: { status: 'PAID' } };
 
 const REPLAY = {
   kind: 'replay' as const,

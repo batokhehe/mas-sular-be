@@ -45,41 +45,41 @@ describe('TemplateRenderer', () => {
   const renderer = new TemplateRenderer();
 
   it('renders order.received', () => {
-    const out = renderer.render('order.received', { orderNumber: 'BN-1', customerName: 'Jane', totalPrice: 30000 });
-    expect(out.subject).toContain('BN-1');
+    const out = renderer.render('order.received', { orderNumber: 'BMS-1', customerName: 'Jane', totalPrice: 30000 });
+    expect(out.subject).toContain('BMS-1');
     expect(out.body).toContain('Jane');
   });
 
   it('renders payment.approved', () => {
-    const out = renderer.render('payment.approved', { orderNumber: 'BN-1', customerName: 'Jane' });
-    expect(out.subject).toContain('BN-1');
+    const out = renderer.render('payment.approved', { orderNumber: 'BMS-1', customerName: 'Jane' });
+    expect(out.subject).toContain('BMS-1');
     expect(out.body).toContain('Jane');
     expect(out.body).toContain('processed');
   });
 
   it('renders payment.rejected', () => {
-    const out = renderer.render('payment.rejected', { orderNumber: 'BN-1', customerName: 'Jane' });
-    expect(out.subject).toContain('BN-1');
+    const out = renderer.render('payment.rejected', { orderNumber: 'BMS-1', customerName: 'Jane' });
+    expect(out.subject).toContain('BMS-1');
     expect(out.body).toContain('could not verify');
   });
 
   it('renders payment.expired', () => {
-    const out = renderer.render('payment.expired', { orderNumber: 'BN-1', customerName: 'Jane' });
-    expect(out.subject).toContain('BN-1');
+    const out = renderer.render('payment.expired', { orderNumber: 'BMS-1', customerName: 'Jane' });
+    expect(out.subject).toContain('BMS-1');
     expect(out.body).toContain('expired');
   });
 
   it('renders payment.receipt_uploaded (admin-facing)', () => {
-    const out = renderer.render('payment.receipt_uploaded', { orderNumber: 'BN-1', customerName: 'Jane' });
-    expect(out.subject).toContain('BN-1');
+    const out = renderer.render('payment.receipt_uploaded', { orderNumber: 'BMS-1', customerName: 'Jane' });
+    expect(out.subject).toContain('BMS-1');
     expect(out.body).toContain('Jane');
     expect(out.body).toContain('verify');
   });
 
   it('renders payment.reminder with the upload link and stage-based tone', () => {
-    const base = { orderNumber: 'BN-1', customerName: 'Jane', paymentMethod: 'BANK_TRANSFER', amount: 50000, uploadUrl: 'https://app/payments/upload/raw' };
+    const base = { orderNumber: 'BMS-1', customerName: 'Jane', paymentMethod: 'BANK_TRANSFER', amount: 50000, uploadUrl: 'https://app/payments/upload/raw' };
     const first = renderer.render('payment.reminder', { ...base, stage: 'first' });
-    expect(first.subject).toContain('BN-1');
+    expect(first.subject).toContain('BMS-1');
     expect(first.body).toContain('https://app/payments/upload/raw');
     const second = renderer.render('payment.reminder', { ...base, stage: 'second' });
     expect(second.body).toContain('final reminder');

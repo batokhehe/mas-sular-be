@@ -175,7 +175,7 @@ export async function seedScenario(world: IntegrationWorld, opts: SeedOptions = 
 
   const order = await prisma.order.create({
     data: {
-      orderNumber: `BN-${uid}`,
+      orderNumber: `BMS-${uid}`,
       userId: user.id,
       addressId: address.id,
       status: opts.orderStatus ?? 'PROCESSING',

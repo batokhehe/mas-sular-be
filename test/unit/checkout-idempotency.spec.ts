@@ -12,7 +12,7 @@ const DTO: CreateOrderDto = {
 };
 
 const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
-const CREATED_ORDER = { id: 'order-1', orderNumber: 'BN-20260611-12345', totalPrice: 30000, items: [], payment: {} };
+const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: {} };
 
 function buildTx() {
   return {
@@ -109,7 +109,7 @@ describe('Checkout idempotency orchestration', () => {
         eventVersion: 1,
         exchange: 'orders',
         routingKey: 'order.created',
-        payload: { orderId: 'order-1', orderNumber: 'BN-20260611-12345', totalPrice: 30000 },
+        payload: { orderId: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000 },
       }),
     });
     expect(outcome).toEqual({ kind: 'result', statusCode: 201, replayed: false, body: CREATED_ORDER });

@@ -6,7 +6,7 @@ import {
   isOrderNumberConflict,
 } from '../../src/modules/orders/order-number.util';
 
-const FORMAT = /^BN-\d{8}-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}$/;
+const FORMAT = /^BMS-\d{8}-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}$/;
 
 function p2002(target: unknown) {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
@@ -18,12 +18,12 @@ function p2002(target: unknown) {
 
 describe('order-number.util', () => {
   describe('generateOrderNumber', () => {
-    it('matches BN-YYYYMMDD-XXXXXXXX with a Crockford Base32 suffix', () => {
+    it('matches BMS-YYYYMMDD-XXXXXXXX with a Crockford Base32 suffix', () => {
       expect(generateOrderNumber()).toMatch(FORMAT);
     });
 
     it('uses the given date for the prefix', () => {
-      expect(generateOrderNumber(new Date('2026-06-12T10:00:00.000Z'))).toMatch(/^BN-20260612-/);
+      expect(generateOrderNumber(new Date('2026-06-12T10:00:00.000Z'))).toMatch(/^BMS-20260612-/);
     });
 
     it('suffix is exactly 8 chars and only uses the Crockford alphabet (no I/L/O/U)', () => {
