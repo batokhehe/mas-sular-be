@@ -55,7 +55,7 @@ async function main(): Promise<void> {
         slug,
         sku: slug.toUpperCase().replaceAll('-', '_'),
         name,
-        description: `${name} premium Baso Nusantara dengan bahan berkualitas dan rasa autentik.`,
+        description: `${name} premium Bakso Mas Sular dengan bahan berkualitas dan rasa autentik.`,
         price,
         originalPrice,
         imageUrl,

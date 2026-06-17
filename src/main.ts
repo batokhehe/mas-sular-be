@@ -68,7 +68,7 @@ async function bootstrap(): Promise<void> {
   );
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('Baso Nusantara API')
+    .setTitle('Bakso Mas Sular API')
     .setDescription('Storefront, checkout, admin CMS, payment, and shipping APIs.')
     .setVersion('1.0')
     .addBearerAuth()
