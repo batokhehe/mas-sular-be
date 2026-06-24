@@ -43,7 +43,7 @@ export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cancellation: OrderCancellationService,
-  ) {}
+  ) { }
 
   async getDashboard() {
     const startOfToday = new Date();
@@ -166,7 +166,13 @@ export class AdminService {
   }
 
   async createPromo(dto: CreatePromoDto) {
-    return this.prisma.promo.create({ data: { ...dto } });
+    const data = {
+      ...dto,
+      startDate: dto.startDate ? new Date(dto.startDate) : null,
+      endDate: dto.endDate ? new Date(dto.endDate) : null,
+    };
+
+    return this.prisma.promo.create({ data });
   }
 
   listPromos() {
@@ -552,7 +558,7 @@ export class AdminService {
     };
 
     if (dto.permissionIds) {
-      const [ , role ] = await this.prisma.$transaction([
+      const [, role] = await this.prisma.$transaction([
         this.prisma.rolePermission.deleteMany({ where: { roleId: id } }),
         this.prisma.role.update({
           where: { id },
@@ -583,7 +589,7 @@ export class AdminService {
     };
 
     if (dto.roleIds) {
-      const [ , user ] = await this.prisma.$transaction([
+      const [, user] = await this.prisma.$transaction([
         this.prisma.userRole.deleteMany({ where: { userId: id } }),
         this.prisma.user.update({
           where: { id },

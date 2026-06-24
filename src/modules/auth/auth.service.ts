@@ -177,4 +177,21 @@ export class AuthService {
     }
     return this.issueTokens(record.userId, record.user.email, record.user.roles.map((r) => r.role.name));
   }
+
+  /**
+   * Phase 13A.3 — revoke ONLY the presented refresh token record (used by logout).
+   * Idempotent: a missing or already-revoked token is a silent no-op. Does not
+   * rotate or issue tokens; familyId is not a lineage here, so there is no
+   * family-wide revoke.
+   */
+  async revokeRefreshToken(refreshToken: string): Promise<void> {
+    const candidates = await this.prisma.refreshToken.findMany({
+      where: { revokedAt: null, expiresAt: { gt: new Date() } },
+      take: 100,
+      orderBy: { createdAt: 'desc' },
+    });
+    const record = candidates.find((token) => bcrypt.compareSync(refreshToken, token.tokenHash));
+    if (!record) return; // missing or already revoked → no-op
+    await this.prisma.refreshToken.update({ where: { id: record.id }, data: { revokedAt: new Date() } });
+  }
 }

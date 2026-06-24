@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../../database/prisma.service';
+import { adminCookieExtractor } from '../../../common/auth/auth-cookies.util';
 
 interface AdminJwtPayload {
   sub: string;
@@ -24,7 +25,12 @@ export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
       throw new Error('JWT_ADMIN_ACCESS_SECRET is not configured'); // no insecure fallback
     }
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // Phase 13A.4: Bearer FIRST (unchanged behavior for header clients/mobile),
+      // then the httpOnly ms_admin_access cookie (gated by AUTH_COOKIE_EXTRACTOR_ENABLED).
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        adminCookieExtractor,
+      ]),
       ignoreExpiration: false,
       secretOrKey: secret,
     });

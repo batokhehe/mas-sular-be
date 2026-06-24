@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../../database/prisma.service';
+import { customerCookieExtractor } from '../../../common/auth/auth-cookies.util';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -15,7 +16,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new Error('JWT_ACCESS_SECRET is not configured'); // no insecure fallback
     }
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // Phase 13A.4: Bearer FIRST (unchanged behavior for header clients/mobile),
+      // then the httpOnly ms_access cookie (gated by AUTH_COOKIE_EXTRACTOR_ENABLED).
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        customerCookieExtractor,
+      ]),
       ignoreExpiration: false,
       secretOrKey: secret,
     });

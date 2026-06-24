@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { CsrfGuard } from './common/auth/csrf.guard';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 
@@ -48,6 +49,10 @@ async function bootstrap(): Promise<void> {
     }),
   );
   app.use(cookieParser(process.env.COOKIE_SECRET));
+  // Phase 13A.6: stateless double-submit CSRF guard. Registered as an ADDITIONAL
+  // global guard — runs independently of the APP_GUARD ThrottlerGuard, does not
+  // replace it. No DI dependencies (reads env via loadCookieConfig).
+  app.useGlobalGuards(new CsrfGuard());
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
