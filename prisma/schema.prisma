@@ -402,6 +402,25 @@ model PaymentUploadToken {
   @@index([expiresAt])
 }
 
+model PaymentAccount {
+  id            String   @id @default(uuid())
+  bankName      String
+  bankCode      String?
+  accountName   String
+  accountNumber String   @unique
+  logoUrl       String?
+  notes         String?  @db.Text
+  isActive      Boolean  @default(false)
+  isVisible     Boolean  @default(true)
+  displayOrder  Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([isVisible])
+  @@index([displayOrder])
+}
+
 model Transaction {
   id                String        @id @default(uuid())
   paymentId         String

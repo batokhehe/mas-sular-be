@@ -1,6 +1,9 @@
 import { EmailNotificationProvider } from '../../src/infrastructure/notifications/email-notification.provider';
 import { NotificationSenderConfig } from '../../src/infrastructure/notifications/notification.config';
 import { PermanentSendError, TransientSendError } from '../../src/infrastructure/notifications/notification-provider';
+import { TemplateRenderer } from '../../src/infrastructure/notifications/template-renderer';
+import { TemplateRegistry } from '../../src/infrastructure/notifications/template-registry';
+import { NotificationMessage } from '../../src/infrastructure/notifications/notification-message';
 
 function config(over: Partial<NotificationSenderConfig> = {}): NotificationSenderConfig {
   return {
@@ -30,13 +33,29 @@ function res(status: number, body = '', headers: Record<string, string> = {}) {
 }
 
 function build(cfg = config()) {
-  const provider = new EmailNotificationProvider(cfg);
+  const provider = new EmailNotificationProvider(cfg, new TemplateRenderer(), new TemplateRegistry());
   const http = jest.fn();
   (provider as any).http = http;
   return { provider, http };
 }
 
-const INPUT = { channel: 'EMAIL', recipient: 'a@b.com', subject: 'S', body: 'B', idempotencyKey: 'n1' };
+const INPUT: NotificationMessage = {
+  channel: 'EMAIL',
+  template: 'order.transfer',
+  recipient: { name: 'Jane', email: 'a@b.com' },
+  variables: {
+    template: 'order.transfer',
+    customerName: 'Jane',
+    orderNumber: 'BMS-1',
+    totalPrice: 30000,
+    uploadToken: 'tok',
+    bankName: 'BCA',
+    bankCode: '014',
+    accountName: 'Bakso Mas Sular',
+    accountNumber: '123',
+  },
+  metadata: { notificationId: 'n1', idempotencyKey: 'n1', externalRequestId: 'x', providerTemplateId: 'order.transfer' },
+};
 
 describe('EmailNotificationProvider (Resend)', () => {
   it('POSTs with Idempotency-Key and returns the provider id', async () => {

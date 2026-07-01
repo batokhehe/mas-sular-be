@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { NotificationChannel, Prisma } from '@prisma/client';
+import { NotificationChannel, PaymentMethod, Prisma } from '@prisma/client';
 import * as amqp from 'amqplib';
 import { PrismaService } from '../../database/prisma.service';
 import { NotificationMetrics } from '../notifications/notification.metrics';
@@ -167,26 +167,43 @@ export class OrderCreatedNotificationConsumer implements OnApplicationBootstrap,
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { user: { select: { email: true, name: true } } },
+      include: {
+        user: { select: { email: true, name: true, phone: true } },
+        address: { select: { phone: true } },
+      },
     });
-    if (!order || !order.user?.email) {
+    if (!order || !order.user) {
       this.logger.warn(`order/recipient missing for order ${orderId}; skipping`);
       return 'skipped';
     }
+
+    // WhatsApp recipient: prefer the delivery-address phone (always captured at
+    // onboarding/checkout); fall back to User.phone (usually null for OAuth users).
+    const phone = order.address?.phone ?? order.user.phone ?? null;
+
+    // Channel = WHATSAPP; template chosen by payment method. The raw upload token is
+    // the last path segment of the emitted uploadUrl (non-COD only) — never the hash.
+    const isCod = order.paymentMethod === PaymentMethod.COD;
+    const uploadUrl = event.payload?.uploadUrl as string | undefined;
+    const uploadToken = uploadUrl ? (uploadUrl.split('/').pop() ?? null) : null;
+    const template = isCod ? 'order.cod' : 'order.transfer';
 
     try {
       await this.prisma.$transaction(async (tx) => {
         await tx.notificationOutbox.create({
           data: {
-            channel: NotificationChannel.EMAIL,
-            recipient: order.user!.email,
-            template: 'order.received',
+            channel: NotificationChannel.WHATSAPP,
+            recipient: phone ?? '',
+            template,
             payload: {
               orderId,
-              orderNumber: event.payload?.orderNumber ?? null,
-              totalPrice: event.payload?.totalPrice ?? null,
+              orderNumber: event.payload?.orderNumber ?? order.orderNumber,
+              totalPrice: event.payload?.totalPrice ?? order.totalPrice,
               customerName: order.user!.name,
-              uploadUrl: event.payload?.uploadUrl ?? null, // present for non-COD checkouts
+              customerPhone: phone,
+              customerEmail: order.user!.email,
+              paymentMethod: order.paymentMethod,
+              uploadToken,
             },
             sourceMessageId: messageId,
           },

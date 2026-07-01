@@ -1,12 +1,15 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { NotificationChannel } from '@prisma/client';
 import { NOTIFICATION_SENDER_CONFIG, NotificationSenderConfig } from './notification.config';
+import { NotificationMessage } from './notification-message';
 import {
   NotificationProvider,
-  NotificationSendInput,
   NotificationSendResult,
   PermanentSendError,
   TransientSendError,
 } from './notification-provider';
+import { TemplateRegistry } from './template-registry';
+import { TemplateRenderer } from './template-renderer';
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
@@ -45,24 +48,35 @@ const defaultResendHttpClient: ResendHttpClient = async (url, init) => {
  */
 @Injectable()
 export class EmailNotificationProvider implements NotificationProvider {
-  readonly channel = 'EMAIL';
+  readonly channel = NotificationChannel.EMAIL;
   private readonly logger = new Logger('EmailNotificationProvider');
   // Overridable seam for tests.
   private http: ResendHttpClient = defaultResendHttpClient;
 
-  constructor(@Inject(NOTIFICATION_SENDER_CONFIG) private readonly config: NotificationSenderConfig) {}
+  constructor(
+    @Inject(NOTIFICATION_SENDER_CONFIG) private readonly config: NotificationSenderConfig,
+    private readonly renderer: TemplateRenderer,
+    private readonly registry: TemplateRegistry,
+  ) {}
 
-  async send(input: NotificationSendInput): Promise<NotificationSendResult> {
+  async send(message: NotificationMessage): Promise<NotificationSendResult> {
     if (!this.config.emailApiKey || !this.config.emailFrom) {
       // Misconfiguration is transient so the breaker pauses rather than mass-FAILED.
       throw new TransientSendError('email provider not configured (RESEND_API_KEY / EMAIL_FROM)');
     }
+    const to = message.recipient.email;
+    if (!to) {
+      throw new PermanentSendError('recipient email is missing');
+    }
+    // Resolve the renderer template id via the registry, then render text from variables.
+    const descriptor = this.registry.resolve(message.channel, message.template);
+    const rendered = this.renderer.render(descriptor.providerTemplateId, message.variables as unknown as Record<string, unknown>);
 
     const body = JSON.stringify({
       from: this.config.emailFrom,
-      to: input.recipient,
-      subject: input.subject,
-      text: input.body,
+      to,
+      subject: rendered.subject,
+      text: rendered.body,
     });
 
     let res: ResendHttpResponse;
@@ -72,7 +86,7 @@ export class EmailNotificationProvider implements NotificationProvider {
         headers: {
           Authorization: `Bearer ${this.config.emailApiKey}`,
           'Content-Type': 'application/json',
-          'Idempotency-Key': input.idempotencyKey,
+          'Idempotency-Key': message.metadata.idempotencyKey,
         },
         body,
         timeoutMs: this.config.emailRequestTimeoutMs,

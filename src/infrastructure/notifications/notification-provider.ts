@@ -1,11 +1,4 @@
-export interface NotificationSendInput {
-  channel: string;
-  recipient: string;
-  subject: string;
-  body: string;
-  /** NotificationOutbox.id — passed to the provider as its idempotency key. */
-  idempotencyKey: string;
-}
+import { NotificationMessage } from './notification-message';
 
 export interface NotificationSendResult {
   providerMessageId: string;
@@ -33,5 +26,6 @@ export class TransientSendError extends Error {
 
 export interface NotificationProvider {
   readonly channel: string;
-  send(input: NotificationSendInput): Promise<NotificationSendResult>;
+  /** Transport only: map the channel-agnostic message to the provider API and send. */
+  send(message: NotificationMessage): Promise<NotificationSendResult>;
 }

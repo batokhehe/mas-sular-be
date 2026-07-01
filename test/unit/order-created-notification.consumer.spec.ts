@@ -7,8 +7,18 @@ import {
 import { ConsumersConfig } from '../../src/infrastructure/consumers/consumers.config';
 
 const CONFIG: ConsumersConfig = { enabled: true, rabbitmqUrl: 'amqp://localhost', prefetch: 10, maxAttempts: 5, retryDelayMs: 30_000 };
-const ORDER = { id: 'order-1', user: { email: 'jane@example.com', name: 'Jane' } };
-const EVENT = { name: 'order.created', payload: { orderId: 'order-1', orderNumber: 'BMS-1', totalPrice: 30000 } };
+const ORDER = {
+  id: 'order-1',
+  orderNumber: 'BMS-1',
+  totalPrice: 30000,
+  paymentMethod: 'BANK_TRANSFER',
+  user: { email: 'jane@example.com', name: 'Jane', phone: null },
+  address: { phone: '08123456789' },
+};
+const EVENT = {
+  name: 'order.created',
+  payload: { orderId: 'order-1', orderNumber: 'BMS-1', totalPrice: 30000, uploadUrl: 'https://app/payment/rawtoken' },
+};
 
 function p2002() {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '6.19.3' });
@@ -68,7 +78,7 @@ describe('OrderCreatedNotificationConsumer', () => {
       const outcome = await consumer.process('evt-1', EVENT);
       expect(outcome).toBe('enqueued');
       expect(prisma.__tx.notificationOutbox.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ channel: 'EMAIL', recipient: 'jane@example.com', template: 'order.received', sourceMessageId: 'evt-1' }),
+        data: expect.objectContaining({ channel: 'WHATSAPP', recipient: '08123456789', template: 'order.transfer', sourceMessageId: 'evt-1' }),
       });
       expect(prisma.__tx.processedEvent.create).toHaveBeenCalledWith({
         data: { consumer: 'order.notifications', messageId: 'evt-1', eventName: 'order.created' },

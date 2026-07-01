@@ -168,7 +168,27 @@ async function main(): Promise<void> {
     { subject: 'roles', action: 'create' },
     { subject: 'roles', action: 'update' },
     { subject: 'roles', action: 'delete' },
+    { subject: 'paymentAccounts', action: 'view' },
+    { subject: 'paymentAccounts', action: 'create' },
+    { subject: 'paymentAccounts', action: 'update' },
+    { subject: 'paymentAccounts', action: 'delete' },
+    { subject: 'paymentAccounts', action: 'activate' },
   ];
+
+  // One active, visible payment account so checkout WhatsApp notifications resolve.
+  await prisma.paymentAccount.upsert({
+    where: { accountNumber: '1234567890' },
+    update: {},
+    create: {
+      bankName: 'BCA',
+      bankCode: '014',
+      accountName: 'Bakso Mas Sular',
+      accountNumber: '1234567890',
+      isActive: true,
+      isVisible: true,
+      displayOrder: 0,
+    },
+  });
 
   const dbPermissions = [];
   for (const perm of permissionsList) {

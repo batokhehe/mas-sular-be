@@ -1,13 +1,15 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { NotificationChannel, NotificationOutbox } from '@prisma/client';
+import { NotificationOutbox } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
 import { PrismaService } from '../../database/prisma.service';
-import { EmailNotificationProvider } from './email-notification.provider';
+import { ConfigurationError } from '../../common/errors/configuration.error';
+import { InvalidPhoneError } from '../../common/utils/phone.util';
+import { NotificationMessageBuilder } from './notification-message.builder';
+import { NotificationProviderFactory } from './notification-provider.factory';
 import { NOTIFICATION_SENDER_CONFIG, NotificationSenderConfig } from './notification.config';
 import { NotificationMetrics } from './notification.metrics';
-import { NotificationProvider, PermanentSendError, TransientSendError } from './notification-provider';
-import { TemplateRenderer } from './template-renderer';
+import { PermanentSendError, TransientSendError } from './notification-provider';
 
 /**
  * Drains PENDING NotificationOutbox rows and delivers them via a provider, using
@@ -36,8 +38,8 @@ export class NotificationSenderWorker implements OnApplicationBootstrap, OnModul
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly email: EmailNotificationProvider,
-    private readonly renderer: TemplateRenderer,
+    private readonly builder: NotificationMessageBuilder,
+    private readonly factory: NotificationProviderFactory,
     private readonly metrics: NotificationMetrics,
     @Inject(NOTIFICATION_SENDER_CONFIG) private readonly config: NotificationSenderConfig,
   ) {}
@@ -128,20 +130,18 @@ export class NotificationSenderWorker implements OnApplicationBootstrap, OnModul
 
   async sendRow(row: NotificationOutbox): Promise<void> {
     try {
-      const provider = this.providerFor(row.channel);
-      const rendered = this.renderer.render(row.template, (row.payload as Record<string, unknown>) ?? {});
-      const result = await provider.send({
-        channel: row.channel,
-        recipient: row.recipient,
-        subject: rendered.subject,
-        body: rendered.body,
-        idempotencyKey: row.id, // provider idempotency key
-      });
+      // Builder owns business composition (active account, phone, template id);
+      // factory resolves the provider by channel; provider is transport-only.
+      const message = await this.builder.build(row);
+      const provider = this.factory.get(row.channel);
+      const result = await provider.send(message);
       await this.markSent(row, result.providerMessageId);
       this.metrics.sent();
       this.resetBreaker();
     } catch (err) {
-      if (err instanceof PermanentSendError) {
+      // ConfigurationError (no active account / unresolved template) and InvalidPhoneError
+      // are non-retryable, same as a provider PermanentSendError.
+      if (err instanceof PermanentSendError || err instanceof ConfigurationError || err instanceof InvalidPhoneError) {
         await this.markFailed(row, err);
         this.metrics.failedPermanent();
         return;
@@ -149,11 +149,6 @@ export class NotificationSenderWorker implements OnApplicationBootstrap, OnModul
       this.tripBreaker();
       await this.scheduleRetry(row, err);
     }
-  }
-
-  private providerFor(channel: NotificationChannel): NotificationProvider {
-    if (channel === NotificationChannel.EMAIL) return this.email;
-    throw new PermanentSendError(`No provider for channel ${channel}`);
   }
 
   private async markSent(row: NotificationOutbox, providerMessageId: string): Promise<void> {

@@ -61,14 +61,27 @@ function build(config = cfg(), rows: ReturnType<typeof row>[] = [row()]) {
       findFirst: jest.fn().mockResolvedValue(null),
     },
   };
-  const email = { channel: 'EMAIL', send: jest.fn().mockResolvedValue({ providerMessageId: 'pm-1' }) };
-  const renderer = { render: jest.fn().mockReturnValue({ subject: 'S', body: 'B' }) };
+  const providerSend = jest.fn().mockResolvedValue({ providerMessageId: 'pm-1' });
+  const provider = { channel: 'WHATSAPP', send: providerSend };
+  const factory = { get: jest.fn().mockReturnValue(provider) };
+  const builder = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    build: jest.fn().mockImplementation((r: any) =>
+      Promise.resolve({
+        channel: r.channel,
+        template: r.template,
+        recipient: { name: 'Jane', phone: '628123456789', email: 'a@b.com' },
+        variables: { template: r.template },
+        metadata: { notificationId: r.id, idempotencyKey: r.id, externalRequestId: 'x', providerTemplateId: 'tpl' },
+      }),
+    ),
+  };
   const metrics = buildMetrics();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const worker = new NotificationSenderWorker(prisma as any, email as any, renderer as any, metrics as any, config);
+  const worker = new NotificationSenderWorker(prisma as any, builder as any, factory as any, metrics as any, config);
   (worker as any).nowMs = () => NOW;
   (worker as any).randomFn = () => 0.5;
-  return { worker, prisma, email, renderer, metrics };
+  return { worker, prisma, provider, providerSend, factory, builder, metrics };
 }
 
 describe('NotificationSenderWorker', () => {
@@ -88,9 +101,11 @@ describe('NotificationSenderWorker', () => {
 
   describe('send', () => {
     it('sends with the row id as the provider idempotency key and marks SENT', async () => {
-      const { worker, prisma, email, metrics } = build();
+      const { worker, prisma, providerSend, metrics } = build();
       await worker.processBatch();
-      expect(email.send).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'n1', recipient: 'a@b.com' }));
+      expect(providerSend).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ idempotencyKey: 'n1' }) }),
+      );
       expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
         where: { id: 'n1' },
         data: expect.objectContaining({ status: 'SENT', providerMessageId: 'pm-1', lockedUntil: null, lockedBy: null }),
@@ -102,8 +117,8 @@ describe('NotificationSenderWorker', () => {
 
   describe('retry & terminal', () => {
     it('transient → backoff retry (attempts++/nextAttemptAt), stays PENDING', async () => {
-      const { worker, prisma, email, metrics } = build();
-      email.send.mockRejectedValue(new TransientSendError('5xx'));
+      const { worker, prisma, providerSend, metrics } = build();
+      providerSend.mockRejectedValue(new TransientSendError('5xx'));
       await worker.sendRow(row({ attempts: 0 }) as any);
       const data = prisma.notificationOutbox.update.mock.calls[0][0].data;
       expect(data.attempts).toBe(1);
@@ -113,16 +128,16 @@ describe('NotificationSenderWorker', () => {
     });
 
     it('honors a provider Retry-After over the computed backoff', async () => {
-      const { worker, prisma, email } = build();
-      email.send.mockRejectedValue(new TransientSendError('rate limited', 7_000));
+      const { worker, prisma, providerSend } = build();
+      providerSend.mockRejectedValue(new TransientSendError('rate limited', 7_000));
       await worker.sendRow(row({ attempts: 0 }) as any);
       const data = prisma.notificationOutbox.update.mock.calls[0][0].data;
       expect((data.nextAttemptAt as Date).getTime()).toBe(NOW + 7_000); // Retry-After, not the 500ms backoff
     });
 
     it('permanent → terminal FAILED', async () => {
-      const { worker, prisma, email, metrics } = build();
-      email.send.mockRejectedValue(new PermanentSendError('bad recipient'));
+      const { worker, prisma, providerSend, metrics } = build();
+      providerSend.mockRejectedValue(new PermanentSendError('bad recipient'));
       await worker.sendRow(row() as any);
       expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
         where: { id: 'n1' },
@@ -132,8 +147,8 @@ describe('NotificationSenderWorker', () => {
     });
 
     it('transient at the attempt cap → FAILED (exhausted)', async () => {
-      const { worker, prisma, email, metrics } = build(cfg({ maxAttempts: 8 }));
-      email.send.mockRejectedValue(new TransientSendError('down'));
+      const { worker, prisma, providerSend, metrics } = build(cfg({ maxAttempts: 8 }));
+      providerSend.mockRejectedValue(new TransientSendError('down'));
       await worker.sendRow(row({ attempts: 7 }) as any);
       expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
         where: { id: 'n1' },
@@ -143,7 +158,10 @@ describe('NotificationSenderWorker', () => {
     });
 
     it('unknown channel → permanent FAILED (no provider)', async () => {
-      const { worker, prisma, metrics } = build();
+      const { worker, prisma, factory, metrics } = build();
+      factory.get.mockImplementation(() => {
+        throw new PermanentSendError('no provider for channel');
+      });
       await worker.sendRow(row({ channel: 'SMS' }) as any);
       expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({ where: { id: 'n1' }, data: expect.objectContaining({ status: 'FAILED' }) });
       expect(metrics.failedPermanent).toHaveBeenCalledTimes(1);
@@ -152,13 +170,13 @@ describe('NotificationSenderWorker', () => {
 
   describe('circuit breaker (pause/resume)', () => {
     it('trips after breakerThreshold transient failures, then resumes on success', async () => {
-      const { worker, email, metrics } = build(cfg({ breakerThreshold: 2 }));
-      email.send.mockRejectedValue(new TransientSendError('down'));
+      const { worker, providerSend, metrics } = build(cfg({ breakerThreshold: 2 }));
+      providerSend.mockRejectedValue(new TransientSendError('down'));
       await worker.sendRow(row() as any);
       await worker.sendRow(row() as any);
       expect(metrics.senderPaused).toHaveBeenCalledTimes(1);
 
-      email.send.mockResolvedValue({ providerMessageId: 'pm-9' });
+      providerSend.mockResolvedValue({ providerMessageId: 'pm-9' });
       await worker.sendRow(row() as any);
       expect(metrics.senderResumed).toHaveBeenCalledTimes(1);
     });

@@ -76,9 +76,29 @@ describe('validateEnv', () => {
     it('requires Resend credentials when the sender is enabled', () => {
       expect(() => validateEnv(valid({ NOTIFICATION_SENDER_ENABLED: 'true' }))).toThrow(/RESEND_API_KEY|EMAIL_FROM/);
     });
-    it('passes when the sender credentials are provided', () => {
+    it('passes (email provider) when Resend credentials are provided', () => {
+      expect(() =>
+        validateEnv(valid({ NOTIFICATION_SENDER_ENABLED: 'true', NOTIFICATION_PROVIDER: 'email', RESEND_API_KEY: 'rk', EMAIL_FROM: 'orders@x.test' })),
+      ).not.toThrow();
+    });
+    it('requires Qontak credentials when the sender routes WhatsApp (multi/qontak)', () => {
       expect(() =>
         validateEnv(valid({ NOTIFICATION_SENDER_ENABLED: 'true', RESEND_API_KEY: 'rk', EMAIL_FROM: 'orders@x.test' })),
+      ).toThrow(/QONTAK_API_TOKEN/);
+    });
+    it('passes (multi) when both Resend and Qontak credentials are provided', () => {
+      expect(() =>
+        validateEnv(
+          valid({
+            NOTIFICATION_SENDER_ENABLED: 'true',
+            RESEND_API_KEY: 'rk',
+            EMAIL_FROM: 'orders@x.test',
+            QONTAK_API_TOKEN: 'qk',
+            QONTAK_CHANNEL_INTEGRATION_ID: 'ci',
+            QONTAK_ORDER_TEMPLATE_ID: 'to',
+            QONTAK_COD_TEMPLATE_ID: 'tc',
+          }),
+        ),
       ).not.toThrow();
     });
   });

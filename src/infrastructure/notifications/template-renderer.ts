@@ -63,6 +63,22 @@ export class TemplateRenderer {
             `Upload your receipt here: ${payload.uploadUrl ?? ''}`,
         };
       }
+      case 'order.transfer':
+        // Email rendering of the transfer order (WhatsApp uses structured variables, not this text).
+        return {
+          subject: `Pesanan ${payload.orderNumber ?? ''} — selesaikan pembayaran`,
+          body:
+            `Halo ${payload.customerName ?? 'Pelanggan'}, mohon transfer Rp ${payload.totalPrice ?? ''} untuk pesanan ` +
+            `${payload.orderNumber ?? ''} ke ${payload.bankName ?? ''} a/n ${payload.accountName ?? ''} ` +
+            `(${payload.accountNumber ?? ''}), lalu unggah bukti pembayaran Anda.`,
+        };
+      case 'order.cod':
+        return {
+          subject: `Pesanan ${payload.orderNumber ?? ''} diterima (COD)`,
+          body:
+            `Halo ${payload.customerName ?? 'Pelanggan'}, pesanan COD Anda ${payload.orderNumber ?? ''} ` +
+            `(total Rp ${payload.totalPrice ?? ''}) telah dikonfirmasi. ${payload.deliveryInfo ?? ''}`,
+        };
       default:
         throw new PermanentSendError(`Unknown notification template: ${template}`);
     }
