@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { Injectable, Optional } from '@nestjs/common';
+import { OrderStatus, Prisma, ReservationStatus } from '@prisma/client';
+import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 
 /**
  * Single source of truth for cancelling an order and restoring its reserved
@@ -9,13 +10,23 @@ import { OrderStatus, Prisma } from '@prisma/client';
  */
 @Injectable()
 export class OrderCancellationService {
+  // Optional: when present, cancellation RELEASES/EXPIRES reservations (restocking
+  // only the committed portion). Absent (legacy/tests) → old item-based restock.
+  constructor(@Optional() private readonly inventory?: InventoryReservationService) {}
+
   /**
    * Cancel an order exactly once. The CANCELLED transition is a CAS over the
    * active-status whitelist, so only the call that actually flips the order
    * restocks inventory and writes the cancellation event. Returns whether this
-   * call performed the transition.
+   * call performed the transition. `releaseStatus` controls the reservation
+   * terminal state (RELEASED for cancel/reject, EXPIRED for payment expiry).
    */
-  async cancelAndRestock(tx: Prisma.TransactionClient, orderId: string, note: string): Promise<{ cancelled: boolean }> {
+  async cancelAndRestock(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    note: string,
+    releaseStatus: ReservationStatus = ReservationStatus.RELEASED,
+  ): Promise<{ cancelled: boolean }> {
     const flip = await tx.order.updateMany({
       where: {
         id: orderId,
@@ -36,17 +47,29 @@ export class OrderCancellationService {
     if (flip.count !== 1) {
       return { cancelled: false };
     }
-    await this.restock(tx, orderId);
+    await this.restock(tx, orderId, note, releaseStatus);
     await tx.orderEvent.create({ data: { orderId, status: OrderStatus.CANCELLED, note } });
     return { cancelled: true };
   }
 
   /**
-   * Restore inventory for a cancelled order: aggregate item quantities per
-   * product and increment product.stock — the exact inverse of the checkout
-   * decrement. Products only (toppings are not stock-tracked).
+   * Restore inventory for a cancelled order. With reservations (new model): release
+   * them — COMMITTED reservations restock (stock was deducted at commit), RESERVED
+   * ones just free the hold. Without reservations (legacy orders / no inventory
+   * service): increment product.stock from order items (inverse of the old
+   * checkout decrement).
    */
-  private async restock(tx: Prisma.TransactionClient, orderId: string): Promise<void> {
+  private async restock(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    note: string,
+    releaseStatus: ReservationStatus,
+  ): Promise<void> {
+    if (this.inventory) {
+      const { handled } = await this.inventory.releaseForOrder(tx, orderId, releaseStatus, note);
+      if (handled) return; // reservations existed → stock handled by the release
+    }
+    // Legacy fallback.
     const items = await tx.orderItem.findMany({ where: { orderId }, select: { productId: true, quantity: true } });
     const quantityByProduct = new Map<string, number>();
     for (const item of items) {

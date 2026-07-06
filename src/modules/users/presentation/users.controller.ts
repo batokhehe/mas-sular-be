@@ -5,6 +5,18 @@ import { CurrentUser, AuthUser } from '../../../common/decorators/current-user.d
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CreateAddressDto, UpdateAddressDto } from '../application/dto/address.dto';
 
+/**
+ * Region names embedded on every address read so the storefront/admin can render
+ * the full hierarchy. Legacy addresses (null region ids) simply return null here
+ * and the client falls back to `fullAddress`.
+ */
+const ADDRESS_REGION_INCLUDE = {
+  province: { select: { id: true, code: true, name: true } },
+  city: { select: { id: true, code: true, name: true, type: true } },
+  district: { select: { id: true, code: true, name: true } },
+  village: { select: { id: true, code: true, name: true, postalCode: true } },
+} as const;
+
 @ApiTags('users')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -18,7 +30,11 @@ export class UsersController {
       where: { id: user.sub },
       include: {
         roles: { include: { role: true } },
-        addresses: { where: { deletedAt: null }, orderBy: { isDefault: 'desc' } },
+        addresses: {
+          where: { deletedAt: null },
+          orderBy: { isDefault: 'desc' },
+          include: ADDRESS_REGION_INCLUDE,
+        },
       },
     });
   }
@@ -28,6 +44,7 @@ export class UsersController {
     return this.prisma.address.findMany({
       where: { userId: user.sub, deletedAt: null },
       orderBy: { isDefault: 'desc' },
+      include: ADDRESS_REGION_INCLUDE,
     });
   }
 

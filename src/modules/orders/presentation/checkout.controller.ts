@@ -14,7 +14,13 @@ import type { Response } from 'express';
 import { AuthUser, CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { IdempotencyService } from '../../../infrastructure/idempotency/idempotency.service';
-import { CheckoutSummaryDto, CreateOrderDto, ShippingCostDto, ValidateVoucherDto } from '../application/dto/create-order.dto';
+import {
+  CheckoutSummaryDto,
+  CreateOrderDto,
+  ShippingCostDto,
+  ShippingOptionsDto,
+  ValidateVoucherDto,
+} from '../application/dto/create-order.dto';
 import { OrdersService } from '../orders.service';
 import { CheckoutIdempotencyMetrics } from './checkout-idempotency.metrics';
 
@@ -35,6 +41,13 @@ export class CheckoutController {
   @Post('shipping-cost')
   shippingCost(@CurrentUser() user: AuthUser, @Body() dto: ShippingCostDto) {
     return this.orders.calculateShippingCost(user.sub, dto);
+  }
+
+  // Delivery-coverage-gated shipping quotation: returns every provider service for
+  // the cart + address, after confirming the area is deliverable.
+  @Post('shipping-options')
+  shippingOptions(@CurrentUser() user: AuthUser, @Body() dto: ShippingOptionsDto) {
+    return this.orders.getShippingOptions(user.sub, dto);
   }
 
   @Post('validate-voucher')

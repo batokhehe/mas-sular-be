@@ -79,6 +79,27 @@ export class TemplateRenderer {
             `Halo ${payload.customerName ?? 'Pelanggan'}, pesanan COD Anda ${payload.orderNumber ?? ''} ` +
             `(total Rp ${payload.totalPrice ?? ''}) telah dikonfirmasi. ${payload.deliveryInfo ?? ''}`,
         };
+      case 'order.shipped':
+        return {
+          subject: `Pesanan ${payload.orderNumber ?? ''} telah dikirim`,
+          body:
+            `Pesanan Anda telah dikirim.\n\nKurir: ${payload.shippingProvider ?? ''}\n` +
+            `Layanan: ${payload.shippingService ?? ''}\nNomor Resi: ${payload.trackingNumber ?? ''}`,
+        };
+      case 'order.delivered':
+        return {
+          subject: `Pesanan ${payload.orderNumber ?? ''} telah sampai`,
+          body:
+            `Pesanan Anda telah sampai di tujuan.\n\nKurir: ${payload.shippingProvider ?? ''}\n` +
+            `Nomor Resi: ${payload.trackingNumber ?? ''}. Terima kasih telah berbelanja!`,
+        };
+      case 'shipment.status':
+        return {
+          subject: `Update pengiriman pesanan ${payload.orderNumber ?? ''}`,
+          body:
+            `Pengiriman pesanan ${payload.orderNumber ?? ''} ${payload.statusLabel ?? ''}.\n\n` +
+            `Kurir: ${payload.shippingProvider ?? ''}\nNomor Resi: ${payload.trackingNumber ?? ''}`,
+        };
       default:
         throw new PermanentSendError(`Unknown notification template: ${template}`);
     }

@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { Payment, PaymentMethod, PaymentStatus } from '@prisma/client';
+import { Payment, PaymentMethod, PaymentStatus, ReservationStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { OrderCancellationService } from '../orders/order-cancellation.service';
@@ -134,7 +134,12 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
         });
         if (flip.count !== 1) return false;
 
-        await this.cancellation.cancelAndRestock(tx, payment.orderId, 'Payment expired (no receipt within the payment window)');
+        await this.cancellation.cancelAndRestock(
+          tx,
+          payment.orderId,
+          'Payment expired (no receipt within the payment window)',
+          ReservationStatus.EXPIRED,
+        );
 
         await tx.outboxEvent.create({
           data: {

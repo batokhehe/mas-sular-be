@@ -66,7 +66,7 @@ describe('PaymentLifecycleWorker — expiry', () => {
       where: { id: 'pay-1', status: { in: ['PENDING', 'WAITING_VERIFICATION'] } },
       data: { status: 'EXPIRED' },
     });
-    expect(cancellation.cancelAndRestock).toHaveBeenCalledWith(tx, 'order-1', expect.any(String)); // inventory restoration
+    expect(cancellation.cancelAndRestock).toHaveBeenCalledWith(tx, 'order-1', expect.any(String), 'EXPIRED'); // release reservations as EXPIRED
     expect(tx.outboxEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         eventName: 'payment.expired',

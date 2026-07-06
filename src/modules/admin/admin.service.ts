@@ -1,7 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { OrderStatus, PaymentStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { ShipmentService } from '../shipment/shipment.service';
+import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import { CreateBannerDto } from '../cms/application/dto/banner.dto';
 import {
   CreateShipmentDto,
@@ -23,6 +25,7 @@ import { UpdateProductDto } from './application/dto/update-product.dto';
 import { UpdatePromoDto } from './application/dto/update-promo.dto';
 import { UpdateRoleDto } from './application/dto/update-role.dto';
 import { UpdateUserDto } from './application/dto/update-user.dto';
+import { pageArgs, paginate } from '../../common/pagination/pagination';
 
 // Payment terminal states: once a payment reaches any of these it is final and
 // no further transition is allowed. PENDING and WAITING_VERIFICATION are the
@@ -38,11 +41,29 @@ function isTerminalPaymentStatus(status: PaymentStatus): boolean {
   return TERMINAL_PAYMENT_STATUSES.includes(status);
 }
 
+// Embed region names on address reads so admin Order/Customer/Shipping detail can
+// render the full hierarchy. Legacy addresses (null region ids) return null here
+// and the UI falls back to `fullAddress`.
+const ADDRESS_WITH_REGIONS = {
+  include: {
+    province: { select: { id: true, code: true, name: true } },
+    city: { select: { id: true, code: true, name: true, type: true } },
+    district: { select: { id: true, code: true, name: true } },
+    village: { select: { id: true, code: true, name: true, postalCode: true } },
+  },
+} as const;
+
 @Injectable()
 export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cancellation: OrderCancellationService,
+    // Optional so existing unit tests that construct AdminService with 2 args keep
+    // working; when absent, automatic shipment creation is skipped.
+    @Optional() private readonly shipments?: ShipmentService,
+    // Optional: commits reservations on verify, releases on reject (legacy flow
+    // when absent — stock was decremented at checkout).
+    @Optional() private readonly inventory?: InventoryReservationService,
   ) { }
 
   async getDashboard() {
@@ -219,22 +240,30 @@ export class AdminService {
     return this.prisma.banner.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
-  listOrders(query: ListAdminOrdersQueryDto) {
-    return this.prisma.order.findMany({
-      where: {
-        deletedAt: null,
-        status: query.status,
-        payment: query.paymentStatus ? { status: query.paymentStatus } : undefined,
-      },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true } },
-        address: true,
-        items: { include: { toppings: true } },
-        payment: true,
-        shipment: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listOrders(query: ListAdminOrdersQueryDto) {
+    const { skip, take, page, limit } = pageArgs(query);
+    const where: Prisma.OrderWhereInput = {
+      deletedAt: null,
+      status: query.status,
+      payment: query.paymentStatus ? { status: query.paymentStatus } : undefined,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        include: {
+          user: { select: { id: true, name: true, email: true, phone: true } },
+          address: ADDRESS_WITH_REGIONS,
+          items: { include: { toppings: true } },
+          payment: true,
+          shipment: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+    return paginate(items, total, page, limit);
   }
 
   async getOrder(id: string) {
@@ -242,10 +271,10 @@ export class AdminService {
       where: { id },
       include: {
         user: { select: { id: true, name: true, email: true, phone: true } },
-        address: true,
+        address: ADDRESS_WITH_REGIONS,
         items: { include: { toppings: true } },
         payment: { include: { transactions: true } },
-        shipment: true,
+        shipment: { include: { history: { orderBy: { changedAt: 'asc' } } } },
         events: { orderBy: { createdAt: 'desc' } },
       },
     });
@@ -342,7 +371,7 @@ export class AdminService {
     const verifiedAt = new Date();
     // Payment must never become PAID unless the order update, audit record, and
     // outbox event all commit. All four writes run in one interactive transaction.
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       // CAS over the non-terminal states. Under a concurrent double-verify only one
       // call flips the row (count === 1); the loser aborts before emitting a second
       // payment.paid — exactly-once event emission.
@@ -361,6 +390,13 @@ export class AdminService {
           events: { create: { status: OrderStatus.PROCESSING, note: dto.note ?? 'Payment verified by admin' } },
         },
       });
+
+      // Commit reservations: deduct Product.stock, mark COMMITTED — atomic with PAID.
+      let committed = 0;
+      if (this.inventory) {
+        committed = await this.inventory.commitForOrder(tx, payment.orderId);
+      }
+
       // actorId is NULL: AuditLog.actorId FKs to User, but the verifier is an Admin.
       // The admin identity is recorded in the JSON payload instead.
       await tx.auditLog.create({
@@ -369,7 +405,13 @@ export class AdminService {
           action: 'payment.verified',
           entity: 'Payment',
           entityId: updated.id,
-          after: { verifiedByAdminId: adminId, status: 'PAID', orderStatus: 'PROCESSING', note: dto.note ?? null },
+          after: {
+            verifiedByAdminId: adminId,
+            status: 'PAID',
+            orderStatus: 'PROCESSING',
+            note: dto.note ?? null,
+            reservationsCommitted: committed,
+          },
         },
       });
       await tx.outboxEvent.create({
@@ -396,6 +438,15 @@ export class AdminService {
       });
       return updated;
     }, { timeout: 10000 });
+
+    // Payment is now PAID (committed). Create the shipment automatically — OUTSIDE
+    // the transaction and best-effort: if the courier API fails the payment stays
+    // verified and the shipment is marked FAILED (admin can retry). Never during
+    // checkout — only here, after PAID.
+    if (this.shipments) {
+      await this.shipments.createForOrderSafe(updated.orderId);
+    }
+    return updated;
   }
 
   async rejectPayment(paymentId: string, dto: RejectAdminPaymentDto) {
@@ -464,18 +515,40 @@ export class AdminService {
     });
   }
 
-  listShipments(query: ListAdminShipmentsQueryDto) {
-    return this.prisma.shipment.findMany({
-      where: { status: query.status },
-      include: { order: { include: { user: { select: { id: true, name: true, email: true, phone: true } } } } },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listShipments(query: ListAdminShipmentsQueryDto) {
+    const { skip, take, page, limit } = pageArgs(query);
+    const where: Prisma.ShipmentWhereInput = { status: query.status };
+    const [items, total] = await Promise.all([
+      this.prisma.shipment.findMany({
+        where,
+        include: {
+          order: {
+            include: {
+              user: { select: { id: true, name: true, email: true, phone: true } },
+              address: ADDRESS_WITH_REGIONS,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.shipment.count({ where }),
+    ]);
+    return paginate(items, total, page, limit);
   }
 
   async getShipment(id: string) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id },
-      include: { order: { include: { user: { select: { id: true, name: true, email: true, phone: true } } } } },
+      include: {
+        order: {
+          include: {
+            user: { select: { id: true, name: true, email: true, phone: true } },
+            address: ADDRESS_WITH_REGIONS,
+          },
+        },
+      },
     });
     if (!shipment) throw new NotFoundException('Shipment not found');
     return shipment;
@@ -514,7 +587,11 @@ export class AdminService {
   async getUser(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      include: { roles: { include: { role: true } }, addresses: true, orders: true },
+      include: {
+        roles: { include: { role: true } },
+        addresses: ADDRESS_WITH_REGIONS,
+        orders: true,
+      },
     });
     if (!user || user.deletedAt) throw new NotFoundException('User not found');
     return user;
@@ -599,7 +676,7 @@ export class AdminService {
               create: dto.roleIds.map((roleId) => ({ roleId })),
             },
           },
-          include: { roles: { include: { role: true } }, addresses: true, orders: true },
+          include: { roles: { include: { role: true } }, addresses: ADDRESS_WITH_REGIONS, orders: true },
         }),
       ]);
       return user;
@@ -608,7 +685,7 @@ export class AdminService {
     return this.prisma.user.update({
       where: { id },
       data: updateData,
-      include: { roles: { include: { role: true } }, addresses: true, orders: true },
+      include: { roles: { include: { role: true } }, addresses: ADDRESS_WITH_REGIONS, orders: true },
     });
   }
 

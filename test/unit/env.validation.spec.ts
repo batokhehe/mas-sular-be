@@ -10,6 +10,8 @@ const VALID: Record<string, string> = {
   GOOGLE_CLIENT_ID: 'google-client-id',
   APP_URL: 'https://shop.example.com',
   CORS_ORIGINS: 'https://shop.example.com',
+  // Required in staging/production (M5); part of a valid production baseline.
+  CHECKOUT_IDEMPOTENCY_ENABLED: 'true',
 };
 
 const valid = (over: Record<string, string | undefined> = {}) => ({ ...VALID, ...over });
@@ -100,6 +102,42 @@ describe('validateEnv', () => {
           }),
         ),
       ).not.toThrow();
+    });
+  });
+
+  describe('checkout idempotency (M5)', () => {
+    it('development: boot succeeds with idempotency OFF', () => {
+      expect(() =>
+        validateEnv(valid({ NODE_ENV: 'development', CORS_ORIGINS: '', CHECKOUT_IDEMPOTENCY_ENABLED: 'false' })),
+      ).not.toThrow();
+    });
+
+    it('test: boot succeeds with idempotency OFF', () => {
+      expect(() =>
+        validateEnv(valid({ NODE_ENV: 'test', CORS_ORIGINS: '', CHECKOUT_IDEMPOTENCY_ENABLED: 'false' })),
+      ).not.toThrow();
+    });
+
+    it('development: boot succeeds when the flag is unset (defaults to off, allowed locally)', () => {
+      expect(() =>
+        validateEnv(valid({ NODE_ENV: 'development', CORS_ORIGINS: '', CHECKOUT_IDEMPOTENCY_ENABLED: undefined })),
+      ).not.toThrow();
+    });
+
+    it('production: boot FAILS when idempotency is OFF', () => {
+      expect(() => validateEnv(valid({ CHECKOUT_IDEMPOTENCY_ENABLED: 'false' }))).toThrow(/CHECKOUT_IDEMPOTENCY_ENABLED/);
+    });
+
+    it('production: boot FAILS when the flag is unset', () => {
+      expect(() => validateEnv(valid({ CHECKOUT_IDEMPOTENCY_ENABLED: undefined }))).toThrow(/CHECKOUT_IDEMPOTENCY_ENABLED/);
+    });
+
+    it('production: boot succeeds when idempotency is ON', () => {
+      expect(() => validateEnv(valid({ CHECKOUT_IDEMPOTENCY_ENABLED: 'true' }))).not.toThrow();
+    });
+
+    it('staging follows production: boot FAILS when OFF', () => {
+      expect(() => validateEnv(valid({ NODE_ENV: 'staging', CHECKOUT_IDEMPOTENCY_ENABLED: 'false' }))).toThrow(/CHECKOUT_IDEMPOTENCY_ENABLED/);
     });
   });
 

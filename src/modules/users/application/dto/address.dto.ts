@@ -1,4 +1,12 @@
-import { IsBoolean, IsNumber, IsOptional, IsString, Length, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNumber,
+  IsNumberString,
+  IsOptional,
+  IsString,
+  Length,
+  MinLength,
+} from 'class-validator';
 
 export class CreateAddressDto {
   @IsString()
@@ -28,6 +36,33 @@ export class CreateAddressDto {
 
   @IsBoolean()
   isDefault!: boolean;
+
+  // --- Indonesian administrative hierarchy (optional for backward compatibility;
+  // the new chain-select forms send them, legacy/free-text callers may omit). ---
+  @IsOptional()
+  @IsString()
+  addressDetail?: string;
+
+  @IsOptional()
+  @IsString()
+  provinceId?: string;
+
+  @IsOptional()
+  @IsString()
+  cityId?: string;
+
+  @IsOptional()
+  @IsString()
+  districtId?: string;
+
+  @IsOptional()
+  @IsString()
+  villageId?: string;
+
+  @IsOptional()
+  @IsNumberString({ no_symbols: true }, { message: 'postalCode must be numeric' })
+  @Length(5, 5, { message: 'postalCode must be exactly 5 digits' })
+  postalCode?: string;
 }
 
 export class UpdateAddressDto {
@@ -65,4 +100,29 @@ export class UpdateAddressDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  @IsOptional()
+  @IsString()
+  addressDetail?: string;
+
+  @IsOptional()
+  @IsString()
+  provinceId?: string;
+
+  @IsOptional()
+  @IsString()
+  cityId?: string;
+
+  @IsOptional()
+  @IsString()
+  districtId?: string;
+
+  @IsOptional()
+  @IsString()
+  villageId?: string;
+
+  @IsOptional()
+  @IsNumberString({ no_symbols: true }, { message: 'postalCode must be numeric' })
+  @Length(5, 5, { message: 'postalCode must be exactly 5 digits' })
+  postalCode?: string;
 }

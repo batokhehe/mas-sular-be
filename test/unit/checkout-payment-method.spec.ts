@@ -24,7 +24,31 @@ function buildPrisma(tx = buildTx()) {
   return {
     product: { findMany: jest.fn().mockResolvedValue([PRODUCT]) },
     topping: { findMany: jest.fn().mockResolvedValue([]) },
-    address: { findFirst: jest.fn().mockResolvedValue({ id: 'addr-1', userId: USER, deletedAt: null }) },
+    address: {
+      findFirst: jest.fn().mockResolvedValue({
+        id: 'addr-1',
+        userId: USER,
+        deletedAt: null,
+        // Real destination fields the shipping request validation requires.
+        provinceId: 'prov-1',
+        cityId: 'city-1',
+        districtId: 'dist-1',
+        villageId: 'vill-1',
+        postalCode: '40131',
+        latitude: -6.9,
+        longitude: 107.6,
+      }),
+    },
+    // Active outlet (shipping origin) — mocked repository, no placeholders.
+    outlet: {
+      findFirst: jest.fn().mockResolvedValue({
+        id: 'outlet-1',
+        name: 'Bakso Mas Sular Pusat',
+        postalCode: '40111',
+        latitude: -6.9147,
+        longitude: 107.6098,
+      }),
+    },
     order: { count: jest.fn().mockResolvedValue(0), findUnique: jest.fn() },
     voucherUsage: { findFirst: jest.fn().mockResolvedValue(null) },
     promo: { findFirst: jest.fn().mockResolvedValue(null) },

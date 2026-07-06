@@ -6,6 +6,9 @@ export interface QontakConfig {
   channelIntegrationId?: string;
   orderTemplateId?: string; // transfer
   codTemplateId?: string;
+  shippedTemplateId?: string; // "Pesanan Anda telah dikirim"
+  deliveredTemplateId?: string; // delivery confirmation
+  shipmentTemplateId?: string; // generic shipment status update
   /** Per-request timeout (ms). */
   timeoutMs: number;
   /** In-call immediate retries for transient network/5xx (complements the durable outbox retry). */
@@ -24,6 +27,9 @@ export function loadQontakConfig(env: NodeJS.ProcessEnv = process.env): QontakCo
     channelIntegrationId: env.QONTAK_CHANNEL_INTEGRATION_ID,
     orderTemplateId: env.QONTAK_ORDER_TEMPLATE_ID,
     codTemplateId: env.QONTAK_COD_TEMPLATE_ID,
+    shippedTemplateId: env.QONTAK_SHIPPED_TEMPLATE_ID,
+    deliveredTemplateId: env.QONTAK_DELIVERED_TEMPLATE_ID,
+    shipmentTemplateId: env.QONTAK_SHIPMENT_TEMPLATE_ID,
     timeoutMs: positiveInt(env.QONTAK_TIMEOUT_MS, 10_000),
     maxRetry: positiveInt(env.QONTAK_MAX_RETRY, 1),
   };

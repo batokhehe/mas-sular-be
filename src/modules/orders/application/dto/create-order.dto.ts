@@ -38,6 +38,17 @@ export class CreateOrderDto {
   @IsEnum(CheckoutCourier)
   courier!: CheckoutCourier;
 
+  // Customer-selected shipping service (provider + service code) from the quotes
+  // returned by /checkout/shipping-options. Optional for backward compatibility;
+  // when omitted the courier's first service is used (legacy behavior).
+  @IsOptional()
+  @IsString()
+  shipping_provider?: string;
+
+  @IsOptional()
+  @IsString()
+  shipping_service?: string;
+
   // Customer-selected payment method. Optional for backward compatibility;
   // defaults to COD when omitted. Persisted to both Order.paymentMethod and
   // Payment.method so the two never diverge.
@@ -86,7 +97,26 @@ export class CheckoutSummaryDto {
 
   @IsOptional()
   @IsString()
+  shipping_provider?: string;
+
+  @IsOptional()
+  @IsString()
+  shipping_service?: string;
+
+  @IsOptional()
+  @IsString()
   voucher_code?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutItemDto)
+  items!: CheckoutItemDto[];
+}
+
+/** Request the available shipping services for a cart + address (after coverage). */
+export class ShippingOptionsDto {
+  @IsString()
+  address_id!: string;
 
   @IsArray()
   @ValidateNested({ each: true })

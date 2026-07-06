@@ -43,7 +43,27 @@ export class NotificationMessageBuilder {
     }
 
     let variables: NotificationVariables;
-    if (template === 'order.transfer') {
+    if (template === 'shipment.status') {
+      variables = {
+        template: 'shipment.status',
+        customerName,
+        orderNumber,
+        shipmentStatus: String(p.shipmentStatus ?? ''),
+        statusLabel: String(p.statusLabel ?? ''),
+        shippingProvider: String(p.shippingProvider ?? ''),
+        shippingService: String(p.shippingService ?? ''),
+        trackingNumber: String(p.trackingNumber ?? ''),
+      };
+    } else if (template === 'order.shipped' || template === 'order.delivered') {
+      variables = {
+        template,
+        customerName,
+        orderNumber,
+        shippingProvider: String(p.shippingProvider ?? ''),
+        shippingService: String(p.shippingService ?? ''),
+        trackingNumber: String(p.trackingNumber ?? ''),
+      };
+    } else if (template === 'order.transfer') {
       const account = await this.accounts.getActiveAccount(); // → ConfigurationError if none active
       const uploadToken = String(p.uploadToken ?? '');
       if (!uploadToken) {

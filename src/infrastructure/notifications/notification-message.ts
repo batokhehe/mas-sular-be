@@ -1,7 +1,12 @@
 import { NotificationChannel } from '@prisma/client';
 
 /** Logical (channel-agnostic) template identifiers. */
-export type NotificationTemplate = 'order.transfer' | 'order.cod';
+export type NotificationTemplate =
+  | 'order.transfer'
+  | 'order.cod'
+  | 'order.shipped'
+  | 'order.delivered'
+  | 'shipment.status';
 
 export interface NotificationRecipient {
   name: string;
@@ -41,6 +46,24 @@ export type NotificationVariables =
       orderNumber: string;
       totalPrice: number;
       deliveryInfo: string;
+    }
+  | {
+      template: 'order.shipped' | 'order.delivered';
+      customerName: string;
+      orderNumber: string;
+      shippingProvider: string;
+      shippingService: string;
+      trackingNumber: string;
+    }
+  | {
+      template: 'shipment.status';
+      customerName: string;
+      orderNumber: string;
+      shipmentStatus: string;
+      statusLabel: string;
+      shippingProvider: string;
+      shippingService: string;
+      trackingNumber: string;
     };
 
 /** The ONE contract shared by every provider. Presentation is mapped inside each provider. */

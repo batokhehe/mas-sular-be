@@ -26,7 +26,12 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { PaymentAccountsModule } from './modules/payment-accounts/payment-accounts.module';
 import { PaymentLifecycleModule } from './modules/payments/payment-lifecycle.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
+import { ShipmentModule } from './modules/shipment/shipment.module';
+import { OutletsModule } from './modules/outlets/outlets.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 import { UsersModule } from './modules/users/users.module';
+import { RegionsModule } from './modules/regions/regions.module';
+import { DeliveryCoverageModule } from './modules/delivery-coverage/delivery-coverage.module';
 import { HealthController } from './health.controller';
 import { UploadModule } from './modules/upload/upload.module';
 
@@ -58,6 +63,8 @@ import { UploadModule } from './modules/upload/upload.module';
     AdminAuthModule,
     AdminModule,
     UsersModule,
+    RegionsModule,
+    DeliveryCoverageModule,
     CatalogModule,
     CartModule,
     OrdersModule,
@@ -65,6 +72,9 @@ import { UploadModule } from './modules/upload/upload.module';
     PaymentAccountsModule,
     PaymentLifecycleModule,
     ShippingModule,
+    ShipmentModule,
+    OutletsModule,
+    InventoryModule,
     CmsModule,
     AuditModule,
     UploadModule,

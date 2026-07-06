@@ -152,6 +152,10 @@ async function main(): Promise<void> {
     { subject: 'Role', action: 'create' },
     { subject: 'Role', action: 'update' },
     { subject: 'Role', action: 'delete' },
+    { subject: 'DeliveryCoverage', action: 'read' },
+    { subject: 'DeliveryCoverage', action: 'create' },
+    { subject: 'DeliveryCoverage', action: 'update' },
+    { subject: 'DeliveryCoverage', action: 'delete' },
     { subject: 'dashboard', action: 'view' },
     { subject: 'products', action: 'view' },
     { subject: 'products', action: 'create' },
@@ -173,6 +177,17 @@ async function main(): Promise<void> {
     { subject: 'paymentAccounts', action: 'update' },
     { subject: 'paymentAccounts', action: 'delete' },
     { subject: 'paymentAccounts', action: 'activate' },
+    { subject: 'Outlet', action: 'read' },
+    { subject: 'Outlet', action: 'create' },
+    { subject: 'Outlet', action: 'update' },
+    { subject: 'Outlet', action: 'delete' },
+    { subject: 'Outlet', action: 'activate' },
+    { subject: 'InventoryReservation', action: 'read' },
+    { subject: 'ProductInventory', action: 'read' },
+    { subject: 'ProductInventory', action: 'update' },
+    { subject: 'StockTransfer', action: 'read' },
+    { subject: 'StockTransfer', action: 'create' },
+    { subject: 'StockTransfer', action: 'update' },
   ];
 
   // One active, visible payment account so checkout WhatsApp notifications resolve.

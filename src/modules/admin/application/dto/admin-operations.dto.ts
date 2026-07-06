@@ -1,7 +1,8 @@
 import { IsEnum, IsInt, IsObject, IsOptional, IsString, IsUrl, Min } from 'class-validator';
 import { OrderStatus, PaymentStatus, ShipmentStatus } from '@prisma/client';
+import { PaginationQueryDto } from '../../../../common/pagination/pagination';
 
-export class ListAdminOrdersQueryDto {
+export class ListAdminOrdersQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsEnum(OrderStatus)
   status?: OrderStatus;
@@ -94,7 +95,7 @@ export class UpdateShipmentDto {
   metadata?: Record<string, unknown>;
 }
 
-export class ListAdminShipmentsQueryDto {
+export class ListAdminShipmentsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsEnum(ShipmentStatus)
   status?: ShipmentStatus;

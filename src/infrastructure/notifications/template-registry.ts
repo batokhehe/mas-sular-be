@@ -35,6 +35,9 @@ export class TemplateRegistry {
     // EMAIL → renderer template key (EmailProvider renders text from variables).
     this.register(NotificationChannel.EMAIL, 'order.transfer', { providerTemplateId: 'order.transfer' });
     this.register(NotificationChannel.EMAIL, 'order.cod', { providerTemplateId: 'order.cod' });
+    this.register(NotificationChannel.EMAIL, 'order.shipped', { providerTemplateId: 'order.shipped' });
+    this.register(NotificationChannel.EMAIL, 'order.delivered', { providerTemplateId: 'order.delivered' });
+    this.register(NotificationChannel.EMAIL, 'shipment.status', { providerTemplateId: 'shipment.status' });
 
     // WHATSAPP → Qontak template ids + parameter layout.
     this.register(NotificationChannel.WHATSAPP, 'order.transfer', {
@@ -56,6 +59,35 @@ export class TemplateRegistry {
         { key: '2', valueName: 'order_no', source: 'orderNumber' },
         { key: '3', valueName: 'price', source: 'totalPrice', format: 'currency' },
         { key: '4', valueName: 'delivery_info', source: 'deliveryInfo' },
+      ],
+      button: false,
+    });
+    // "Pesanan Anda telah dikirim. Kurir / Layanan / Nomor Resi"
+    this.register(NotificationChannel.WHATSAPP, 'order.shipped', {
+      providerTemplateId: qontak.shippedTemplateId ?? '',
+      body: [
+        { key: '1', valueName: 'provider', source: 'shippingProvider' },
+        { key: '2', valueName: 'service', source: 'shippingService' },
+        { key: '3', valueName: 'tracking', source: 'trackingNumber' },
+      ],
+      button: false,
+    });
+    this.register(NotificationChannel.WHATSAPP, 'order.delivered', {
+      providerTemplateId: qontak.deliveredTemplateId ?? '',
+      body: [
+        { key: '1', valueName: 'provider', source: 'shippingProvider' },
+        { key: '2', valueName: 'service', source: 'shippingService' },
+        { key: '3', valueName: 'tracking', source: 'trackingNumber' },
+      ],
+      button: false,
+    });
+    // Generic shipment status update — one template, status text supplied per event.
+    this.register(NotificationChannel.WHATSAPP, 'shipment.status', {
+      providerTemplateId: qontak.shipmentTemplateId ?? '',
+      body: [
+        { key: '1', valueName: 'status', source: 'statusLabel' },
+        { key: '2', valueName: 'provider', source: 'shippingProvider' },
+        { key: '3', valueName: 'tracking', source: 'trackingNumber' },
       ],
       button: false,
     });
