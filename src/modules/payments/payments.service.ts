@@ -100,6 +100,8 @@ export class PaymentsService {
     return {
       orderNumber: payment.order.orderNumber,
       amount: payment.amount,
+      // Manual BANK_TRANSFER unique code (folded into `amount`); null for QRIS/legacy.
+      uniqueCode: payment.uniqueCode ?? null,
       method: payment.method,
       bankName: payment.manualBankName,
       status: payment.status,

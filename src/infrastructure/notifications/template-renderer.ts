@@ -65,6 +65,8 @@ export class TemplateRenderer {
       }
       case 'order.transfer':
         // Email rendering of the transfer order (WhatsApp uses structured variables, not this text).
+        // totalPrice is the final transfer amount (unique code already folded in) — shown as-is,
+        // with no separate unique-code line.
         return {
           subject: `Pesanan ${payload.orderNumber ?? ''} — selesaikan pembayaran`,
           body:

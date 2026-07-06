@@ -141,6 +141,24 @@ describe('validateEnv', () => {
     });
   });
 
+  describe('payment unique code range', () => {
+    it('accepts the default range (unset) and an explicit valid range', () => {
+      expect(() => validateEnv(valid())).not.toThrow();
+      expect(() =>
+        validateEnv(valid({ PAYMENT_UNIQUE_CODE_ENABLED: 'true', PAYMENT_UNIQUE_CODE_MIN: '100', PAYMENT_UNIQUE_CODE_MAX: '999' })),
+      ).not.toThrow();
+    });
+    it('rejects min < 0', () => {
+      expect(() => validateEnv(valid({ PAYMENT_UNIQUE_CODE_MIN: '-1' }))).toThrow(/PAYMENT_UNIQUE_CODE_MIN/);
+    });
+    it('rejects max > 999', () => {
+      expect(() => validateEnv(valid({ PAYMENT_UNIQUE_CODE_MAX: '1000' }))).toThrow(/PAYMENT_UNIQUE_CODE_MAX/);
+    });
+    it('rejects max <= min', () => {
+      expect(() => validateEnv(valid({ PAYMENT_UNIQUE_CODE_MIN: '500', PAYMENT_UNIQUE_CODE_MAX: '400' }))).toThrow(/PAYMENT_UNIQUE_CODE_MAX/);
+    });
+  });
+
   describe('payment timing', () => {
     it('rejects non-increasing windows', () => {
       expect(() => validateEnv(valid({ PAYMENT_FIRST_REMINDER_MS: '5000', PAYMENT_SECOND_REMINDER_MS: '4000' }))).toThrow(/payment windows/);

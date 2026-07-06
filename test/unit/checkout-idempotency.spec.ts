@@ -12,7 +12,9 @@ const DTO: CreateOrderDto = {
 };
 
 const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
-const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: {} };
+// payment.amount is the transfer total the order.created event carries (business
+// total here since there is no unique code in this suite).
+const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: { amount: 30000 } };
 
 function buildTx() {
   return {

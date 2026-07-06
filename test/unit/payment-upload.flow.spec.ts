@@ -41,7 +41,14 @@ describe('Upload landing — getUploadPage', () => {
   it('returns page data for an active token + uploadable payment', async () => {
     const { svc } = buildPage();
     const page = await svc.getUploadPage('raw');
-    expect(page).toEqual({ orderNumber: 'BMS-1', amount: 50000, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
+    expect(page).toEqual({ orderNumber: 'BMS-1', amount: 50000, uniqueCode: null, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
+  });
+
+  it('surfaces the manual BANK_TRANSFER unique code so the upload page can display it', async () => {
+    const { svc } = buildPage({ payment: pagePayment({ amount: 50123, uniqueCode: 123 }) });
+    const page = await svc.getUploadPage('raw');
+    expect(page.uniqueCode).toBe(123);
+    expect(page.amount).toBe(50123); // exact transfer amount (base + code)
   });
 
   it('404s (generic) on an invalid/expired/used token — no enumeration', async () => {

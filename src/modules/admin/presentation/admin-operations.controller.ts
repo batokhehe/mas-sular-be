@@ -6,6 +6,8 @@ import { Permissions } from '../../../common/decorators/permissions.decorator';
 import { AdminGuard } from '../../../common/guards/admin.guard';
 import { PermissionGuard } from '../../../common/guards/permission.guard';
 import { AdminService } from '../admin.service';
+import { ExecutiveDashboardService } from '../executive-dashboard.service';
+import { AdminOrderNotesService } from '../admin-order-notes.service';
 import {
   CreateShipmentDto,
   ListAdminOrdersQueryDto,
@@ -15,6 +17,7 @@ import {
   UpdateShipmentDto,
   VerifyAdminPaymentDto,
 } from '../application/dto/admin-operations.dto';
+import { CreateOrderNoteDto, UpdateOrderNoteDto } from '../application/dto/order-note.dto';
 import { CreateRoleDto } from '../application/dto/create-role.dto';
 import { UpdateRoleDto } from '../application/dto/update-role.dto';
 import { UpdateUserDto } from '../application/dto/update-user.dto';
@@ -23,12 +26,23 @@ import { UpdateUserDto } from '../application/dto/update-user.dto';
 @UseGuards(AdminGuard, PermissionGuard)
 @Controller({ path: 'admin', version: '1' })
 export class AdminOperationsController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly executiveDashboard: ExecutiveDashboardService,
+    private readonly orderNotes: AdminOrderNotesService,
+  ) {}
 
   @Permissions('Dashboard.read')
   @Get('dashboard')
   dashboard() {
     return this.adminService.getDashboard();
+  }
+
+  // Executive dashboard: one aggregated, 30s-cached payload for every widget.
+  @Permissions('Dashboard.read')
+  @Get('dashboard/executive')
+  executiveDashboardData() {
+    return this.executiveDashboard.getDashboard();
   }
 
   @Permissions('Order.read')
@@ -41,6 +55,43 @@ export class AdminOperationsController {
   @Get('orders/:id')
   getOrder(@Param('id') id: string) {
     return this.adminService.getOrder(id);
+  }
+
+  // Read-only operations-center bundle (history, timeline, actions, audit, notifications).
+  @Permissions('Order.read')
+  @Get('orders/:id/operations')
+  orderOperations(@Param('id') id: string) {
+    return this.adminService.getOrderOperations(id);
+  }
+
+  // ---- Internal notes (admin-only annotations; isolated from business flows) ----
+  @Permissions('Order.read')
+  @Get('orders/:id/notes')
+  listOrderNotes(@Param('id') id: string) {
+    return this.orderNotes.list(id);
+  }
+
+  @Permissions('Order.update')
+  @Post('orders/:id/notes')
+  createOrderNote(@Param('id') id: string, @CurrentAdmin() admin: AdminUser, @Body() dto: CreateOrderNoteDto) {
+    return this.orderNotes.create(id, { id: admin.sub, name: admin.name }, dto);
+  }
+
+  @Permissions('Order.update')
+  @Patch('orders/:id/notes/:noteId')
+  updateOrderNote(
+    @Param('id') id: string,
+    @Param('noteId') noteId: string,
+    @CurrentAdmin() admin: AdminUser,
+    @Body() dto: UpdateOrderNoteDto,
+  ) {
+    return this.orderNotes.update(id, noteId, admin.sub, dto);
+  }
+
+  @Permissions('Order.update')
+  @Delete('orders/:id/notes/:noteId')
+  deleteOrderNote(@Param('id') id: string, @Param('noteId') noteId: string, @CurrentAdmin() admin: AdminUser) {
+    return this.orderNotes.remove(id, noteId, admin.sub);
   }
 
   @Permissions('Order.update')
@@ -57,8 +108,8 @@ export class AdminOperationsController {
 
   @Permissions('Payment.read')
   @Get('payments/pending-verification')
-  listPendingPaymentVerification() {
-    return this.adminService.listPayments();
+  listPendingPaymentVerification(@Query('search') search?: string) {
+    return this.adminService.listPayments(PaymentStatus.WAITING_VERIFICATION, search);
   }
 
   @Permissions('Payment.verify')

@@ -26,7 +26,7 @@ function transferMessage(): NotificationMessage {
       template: 'order.transfer',
       customerName: 'Jane',
       orderNumber: 'BMS-1',
-      totalPrice: 30000,
+      totalPrice: 30123,
       uploadToken: 'RAWTOKEN',
       bankName: 'BCA',
       bankCode: '014',
@@ -67,6 +67,7 @@ describe('QontakWhatsAppProvider', () => {
       language: { code: 'id' },
     });
     // Body params: exact keys + value-names, order preserved.
+    // The unique code is NOT a separate WhatsApp parameter — the total already includes it.
     expect(body.parameters.body.map((p: { key: string; value: string }) => ({ key: p.key, value: p.value }))).toEqual([
       { key: '1', value: 'customer_name' },
       { key: '2', value: 'order_no' },
@@ -75,8 +76,10 @@ describe('QontakWhatsAppProvider', () => {
       { key: '5', value: 'account_name' },
       { key: '6', value: 'account_number' },
     ]);
+    expect(body.parameters.body).toHaveLength(6);
     expect(body.parameters.body[0].value_text).toBe('Jane');
-    expect(body.parameters.body[2].value_text).toMatch(/^Rp 30[.,]000$/);
+    // Price param carries the final transfer amount (unique code already folded in).
+    expect(body.parameters.body[2].value_text).toMatch(/^Rp 30[.,]123$/);
     expect(body.parameters.body[3].value_text).toBe('BCA');
     // Button carries ONLY the raw token — never the full URL / hash.
     expect(body.parameters.buttons).toEqual([{ index: '0', type: 'url', value: 'RAWTOKEN' }]);

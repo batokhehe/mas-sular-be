@@ -26,6 +26,7 @@ import { UpdatePromoDto } from './application/dto/update-promo.dto';
 import { UpdateRoleDto } from './application/dto/update-role.dto';
 import { UpdateUserDto } from './application/dto/update-user.dto';
 import { pageArgs, paginate } from '../../common/pagination/pagination';
+import { buildOrderTimeline, computeAvailableActions } from './order-operations.util';
 
 // Payment terminal states: once a payment reaches any of these it is final and
 // no further transition is allowed. PENDING and WAITING_VERIFICATION are the
@@ -272,14 +273,101 @@ export class AdminService {
       include: {
         user: { select: { id: true, name: true, email: true, phone: true } },
         address: ADDRESS_WITH_REGIONS,
-        items: { include: { toppings: true } },
-        payment: { include: { transactions: true } },
+        // product image/sku for the operations-center line items (select → no N+1).
+        items: { include: { toppings: true, product: { select: { id: true, sku: true, imageUrl: true } } } },
+        payment: { include: { transactions: { orderBy: { createdAt: 'asc' } } } },
         shipment: { include: { history: { orderBy: { changedAt: 'asc' } } } },
+        // Inventory reservations (allocated outlet + reserved qty) for the ops view.
+        reservations: {
+          include: { outlet: { select: { id: true, name: true } }, product: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
         events: { orderBy: { createdAt: 'desc' } },
       },
     });
     if (!order || order.deletedAt) throw new NotFoundException('Order not found');
     return order;
+  }
+
+  /**
+   * Read-only "operations center" bundle: customer lifetime history, unified
+   * timeline (order + payment + inventory + shipment), valid quick actions, audit
+   * logs, notification history, and the active payment account. One focused
+   * findUnique + a parallel Promise.all (no N+1). Never mutates state.
+   */
+  async getOrderOperations(id: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        deletedAt: true,
+        createdAt: true,
+        payment: {
+          select: {
+            id: true,
+            status: true,
+            verifiedAt: true,
+            manualReceiptUrl: true,
+            createdAt: true,
+            transactions: { select: { status: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+          },
+        },
+        shipment: {
+          select: {
+            createdAt: true,
+            status: true,
+            trackingNumber: true,
+            trackingUrl: true,
+            history: { select: { mappedStatus: true, changedAt: true }, orderBy: { changedAt: 'asc' } },
+          },
+        },
+        events: { select: { status: true, note: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+        reservations: { select: { status: true, createdAt: true, product: { select: { name: true } } }, orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!order || order.deletedAt) throw new NotFoundException('Order not found');
+    const paymentId = order.payment?.id;
+
+    const [customerAgg, customerCount, auditLogs, notifications, paymentAccount] = await Promise.all([
+      this.prisma.order.aggregate({ where: { userId: order.userId, deletedAt: null, payment: { status: PaymentStatus.PAID } }, _sum: { totalPrice: true } }),
+      this.prisma.order.count({ where: { userId: order.userId, deletedAt: null } }),
+      this.prisma.auditLog.findMany({
+        where: { OR: [{ entity: 'Order', entityId: id }, ...(paymentId ? [{ entity: 'Payment', entityId: paymentId }] : [])] },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        select: { id: true, actorId: true, action: true, entity: true, entityId: true, ipAddress: true, after: true, createdAt: true },
+      }),
+      this.prisma.notificationOutbox.findMany({
+        where: { payload: { path: '$.orderId', equals: id } },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        select: { id: true, channel: true, template: true, status: true, attempts: true, providerMessageId: true, sentAt: true, createdAt: true },
+      }),
+      this.prisma.paymentAccount.findFirst({ where: { isActive: true }, select: { bankName: true, bankCode: true, accountName: true, accountNumber: true } }),
+    ]);
+
+    return {
+      customerHistory: { totalOrders: customerCount, lifetimeRevenue: customerAgg._sum.totalPrice ?? 0 },
+      timeline: buildOrderTimeline({
+        createdAt: order.createdAt,
+        events: order.events,
+        payment: order.payment
+          ? { createdAt: order.payment.createdAt, status: order.payment.status, verifiedAt: order.payment.verifiedAt, transactions: order.payment.transactions }
+          : null,
+        shipment: order.shipment ? { createdAt: order.shipment.createdAt, history: order.shipment.history } : null,
+        reservations: order.reservations,
+      }),
+      availableActions: computeAvailableActions({
+        status: order.status,
+        payment: order.payment ? { status: order.payment.status, manualReceiptUrl: order.payment.manualReceiptUrl } : null,
+        shipment: order.shipment ? { status: order.shipment.status, trackingNumber: order.shipment.trackingNumber, trackingUrl: order.shipment.trackingUrl } : null,
+      }),
+      auditLogs,
+      notifications,
+      paymentAccount,
+    };
   }
 
   async updateOrderStatus(id: string, dto: UpdateOrderStatusDto) {
@@ -339,9 +427,27 @@ export class AdminService {
     }, { timeout: 10000 });
   }
 
-  listPayments(status: PaymentStatus = PaymentStatus.WAITING_VERIFICATION) {
+  listPayments(status: PaymentStatus = PaymentStatus.WAITING_VERIFICATION, search?: string) {
+    const term = search?.trim();
+    // A fully-numeric term matches the transfer amount (which already includes the
+    // unique code), so finance can paste the incoming amount (e.g. "135123") to find
+    // the order. Text terms match order number / customer name / email.
+    const amount = term && /^\d+$/.test(term) ? Number(term) : undefined;
     return this.prisma.payment.findMany({
-      where: { deletedAt: null, status },
+      where: {
+        deletedAt: null,
+        status,
+        ...(term
+          ? {
+              OR: [
+                { order: { orderNumber: { contains: term } } },
+                { order: { user: { name: { contains: term } } } },
+                { order: { user: { email: { contains: term } } } },
+                ...(amount !== undefined ? [{ amount }] : []),
+              ],
+            }
+          : {}),
+      },
       include: {
         order: {
           include: {

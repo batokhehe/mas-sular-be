@@ -85,6 +85,18 @@ describe('TemplateRenderer', () => {
     expect(second.body).toContain('final reminder');
   });
 
+  it('renders order.transfer with only the total transfer amount — no unique-code section', () => {
+    const out = renderer.render('order.transfer', {
+      orderNumber: 'BMS-1', customerName: 'Jane', totalPrice: 135123, uniqueCode: 123,
+      bankName: 'BCA', accountName: 'Toko', accountNumber: '123',
+    });
+    // Total payment (final transfer amount) is shown...
+    expect(out.body).toContain('135123');
+    // ...but the unique code is never called out separately (already in the total).
+    expect(out.body).not.toContain('Kode unik');
+    expect(out.body).not.toMatch(/TEPAT/i);
+  });
+
   it('throws PermanentSendError for an unknown template', () => {
     expect(() => renderer.render('nope', {})).toThrow(PermanentSendError);
   });

@@ -92,6 +92,12 @@ const baseSchema = z
     // Checkout idempotency. Optional locally; MUST be true in staging/production
     // (cross-field below) so duplicate checkout requests can never double-create.
     CHECKOUT_IDEMPOTENCY_ENABLED: boolFlag,
+
+    // Manual BANK_TRANSFER unique code. Disabled by default → behavior identical to
+    // before. Range invariants (min >= 0, max <= 999, max > min) checked cross-field.
+    PAYMENT_UNIQUE_CODE_ENABLED: boolFlag,
+    PAYMENT_UNIQUE_CODE_MIN: z.coerce.number().int().optional(),
+    PAYMENT_UNIQUE_CODE_MAX: z.coerce.number().int().optional(),
   })
   .passthrough(); // tolerate the many optional tuning vars (OUTBOX_*, NOTIFICATION_SENDER_*, RETENTION_*, ...)
 
@@ -154,6 +160,20 @@ export const envSchema = baseSchema.superRefine((env, ctx) => {
   // Browsers reject SameSite=None cookies unless they are also Secure.
   if (env.COOKIE_SAMESITE === 'none' && env.COOKIE_SECURE !== 'true') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['COOKIE_SECURE'], message: 'COOKIE_SECURE must be "true" when COOKIE_SAMESITE=none' });
+  }
+
+  // Unique-code range invariants (only meaningful when the feature is enabled, but
+  // validated whenever provided so a bad range never reaches the generator).
+  const codeMin = env.PAYMENT_UNIQUE_CODE_MIN ?? 100;
+  const codeMax = env.PAYMENT_UNIQUE_CODE_MAX ?? 999;
+  if (codeMin < 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAYMENT_UNIQUE_CODE_MIN'], message: 'PAYMENT_UNIQUE_CODE_MIN must be >= 0' });
+  }
+  if (codeMax > 999) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAYMENT_UNIQUE_CODE_MAX'], message: 'PAYMENT_UNIQUE_CODE_MAX must be <= 999' });
+  }
+  if (!(codeMax > codeMin)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAYMENT_UNIQUE_CODE_MAX'], message: 'PAYMENT_UNIQUE_CODE_MAX must be greater than PAYMENT_UNIQUE_CODE_MIN' });
   }
 
   // Payment timing must be strictly increasing so reminders precede expiry.

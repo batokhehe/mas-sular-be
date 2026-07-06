@@ -494,6 +494,7 @@ model Order {
   events                   OrderEvent[]
   voucherUsage             VoucherUsage?
   reservations             InventoryReservation[]
+  internalNotes            OrderNote[]
   createdAt                DateTime               @default(now())
   updatedAt                DateTime               @updatedAt
   deletedAt                DateTime?
@@ -538,12 +539,30 @@ model OrderEvent {
   createdAt DateTime    @default(now())
 }
 
+/// Admin-only internal note attached to an order (operations annotations). Not
+/// customer-facing; independent of the checkout/payment/shipment flows.
+model OrderNote {
+  id        String   @id @default(uuid())
+  orderId   String
+  adminId   String   @db.VarChar(36)
+  adminName String   @db.VarChar(255)
+  body      String   @db.Text
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId, createdAt])
+}
+
 model Payment {
   id                String               @id @default(uuid())
   orderId           String               @unique
   method            PaymentMethod
   status            PaymentStatus        @default(PENDING)
   amount            Int
+  // Manual BANK_TRANSFER unique 3-digit code folded into `amount` so the transfer
+  // total is easy to reconcile. Null for QRIS/COD/GATEWAY and legacy payments.
+  uniqueCode        Int?
   provider          String?
   providerReference String?
   manualBankName    String?

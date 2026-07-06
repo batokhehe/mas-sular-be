@@ -69,6 +69,8 @@ export class NotificationMessageBuilder {
       if (!uploadToken) {
         throw new ConfigurationError(`transfer notification ${row.id} is missing uploadToken`);
       }
+      // The unique code is already folded into totalPrice (the final transfer amount),
+      // so the customer-facing message shows only the total — no separate code line.
       variables = {
         template: 'order.transfer',
         customerName,

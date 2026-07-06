@@ -33,6 +33,7 @@ export type NotificationVariables =
       template: 'order.transfer';
       customerName: string;
       orderNumber: string;
+      // totalPrice is the final transfer amount (unique code already folded in).
       totalPrice: number;
       uploadToken: string;
       bankName: string;

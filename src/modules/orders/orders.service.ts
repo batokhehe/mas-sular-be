@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { IdempotencyService, SupersededError } from '../../infrastructure/idempotency/idempotency.service';
 import { PaymentUploadTokenService } from '../payments/payment-upload-token.service';
+import { PaymentUniqueCodeService } from '../payments/payment-unique-code.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { ShippingQuote, ShippingRateRequest } from '../shipping/domain/shipping-provider.interface';
 import { DeliveryCoverageService } from '../delivery-coverage/delivery-coverage.service';
@@ -71,6 +72,9 @@ export class OrdersService {
     // Optional: when present, checkout ALLOCATES the best outlet (multi-outlet)
     // instead of always using the single active outlet (legacy fallback).
     @Optional() private readonly allocation?: InventoryAllocationService,
+    // Optional: when present (and enabled), manual BANK_TRANSFER orders get a random
+    // unique code folded into the amount. Absent → legacy behavior (no code).
+    @Optional() private readonly uniqueCode?: PaymentUniqueCodeService,
   ) {}
 
   /**
@@ -574,6 +578,20 @@ export class OrdersService {
     // and its payment. Defaults to COD when the client omits a selection.
     const paymentMethod = dto.payment_method ?? PaymentMethod.COD;
 
+    // Accounting split: the unique code is NOT business revenue — it only identifies
+    // the bank transfer. So the business total (subtotal + shipping - discount) is
+    // stored on Order.totalPrice (what reports sum), while the transfer total
+    // (businessTotal + uniqueCode) is stored on Payment.amount (what the customer
+    // sends). Only BANK_TRANSFER gets a code; when it is null (QRIS/COD/legacy/disabled)
+    // transferTotal == businessTotal, so Payment.amount == Order.totalPrice.
+    const businessTotal = summary.grand_total;
+    let uniqueCode: number | null = null;
+    let transferTotal = businessTotal;
+    if (paymentMethod === PaymentMethod.BANK_TRANSFER && this.uniqueCode?.isEnabled()) {
+      uniqueCode = await this.uniqueCode.allocate(businessTotal);
+      if (uniqueCode !== null) transferTotal = businessTotal + uniqueCode;
+    }
+
     const order = await this.prisma.$transaction(async (tx) => {
       // Legacy path (no inventory service wired): decrement Product.stock now.
       // Reservation path (inventory present): stock is RESERVED after order.create
@@ -604,7 +622,8 @@ export class OrdersService {
           subtotal: summary.subtotal,
           deliveryFee: summary.shipping_cost,
           voucherDiscountAmount: summary.discount,
-          totalPrice: summary.grand_total,
+          // Business revenue only — the unique code lives on Payment.amount, not here.
+          totalPrice: businessTotal,
           coverageId: summary.coverage_id ?? undefined,
           estimatedDeliveryMinutes: summary.estimated_minutes ?? undefined,
           outletId: summary.outlet_id ?? undefined,
@@ -639,7 +658,9 @@ export class OrdersService {
           payment: {
             create: {
               method: paymentMethod,
-              amount: summary.grand_total,
+              // Transfer total = businessTotal + uniqueCode (what the customer sends).
+              amount: transferTotal,
+              uniqueCode,
               status: PaymentStatus.PENDING,
             },
           },
@@ -735,7 +756,10 @@ export class OrdersService {
           payload: {
             orderId: createdOrder.id,
             orderNumber: createdOrder.orderNumber,
-            totalPrice: createdOrder.totalPrice,
+            // Notifications show the amount the customer must transfer = Payment.amount
+            // (transfer total). Order.totalPrice is now business-only, so source this
+            // from the payment to keep the customer-facing amount unchanged.
+            totalPrice: createdOrder.payment!.amount,
             ...(uploadUrl ? { uploadUrl } : {}),
           },
           metadata: { source: 'orders.checkout' },
