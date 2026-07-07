@@ -90,7 +90,7 @@ export class PaymentsService {
 
     const payment = await this.prisma.payment.findUnique({
       where: { id: token.paymentId },
-      include: { order: { select: { orderNumber: true } } },
+      include: { order: { select: { orderNumber: true, totalPrice: true } } },
     });
     if (!payment || payment.deletedAt) throw new NotFoundException('Upload link is invalid or has expired');
     if (!UPLOADABLE_STATUSES.includes(payment.status)) {
@@ -100,6 +100,10 @@ export class PaymentsService {
     return {
       orderNumber: payment.order.orderNumber,
       amount: payment.amount,
+      // Business revenue (Order.totalPrice) exposed read-only so the upload page can
+      // show the breakdown without any client-side math. Equals `amount` when there
+      // is no unique code.
+      businessTotal: payment.order.totalPrice,
       // Manual BANK_TRANSFER unique code (folded into `amount`); null for QRIS/legacy.
       uniqueCode: payment.uniqueCode ?? null,
       method: payment.method,

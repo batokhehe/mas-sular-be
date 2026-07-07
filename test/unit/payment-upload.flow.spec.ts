@@ -17,7 +17,7 @@ function buildPage(opts: { token?: unknown; payment?: unknown } = {}) {
   return { svc, prisma, uploadTokens };
 }
 function pagePayment(over: Record<string, unknown> = {}) {
-  return { id: 'pay-1', status: 'PENDING', amount: 50000, method: 'BANK_TRANSFER', manualBankName: 'BCA', deletedAt: null, order: { orderNumber: 'BMS-1' }, ...over };
+  return { id: 'pay-1', status: 'PENDING', amount: 50000, method: 'BANK_TRANSFER', manualBankName: 'BCA', deletedAt: null, order: { orderNumber: 'BMS-1', totalPrice: 50000 }, ...over };
 }
 
 // ---------- POST /payments/upload/:token ----------
@@ -41,14 +41,15 @@ describe('Upload landing — getUploadPage', () => {
   it('returns page data for an active token + uploadable payment', async () => {
     const { svc } = buildPage();
     const page = await svc.getUploadPage('raw');
-    expect(page).toEqual({ orderNumber: 'BMS-1', amount: 50000, uniqueCode: null, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
+    expect(page).toEqual({ orderNumber: 'BMS-1', amount: 50000, businessTotal: 50000, uniqueCode: null, method: 'BANK_TRANSFER', bankName: 'BCA', status: 'PENDING' });
   });
 
-  it('surfaces the manual BANK_TRANSFER unique code so the upload page can display it', async () => {
-    const { svc } = buildPage({ payment: pagePayment({ amount: 50123, uniqueCode: 123 }) });
+  it('surfaces the manual BANK_TRANSFER unique code + business total so the upload page can display the breakdown', async () => {
+    const { svc } = buildPage({ payment: pagePayment({ amount: 50123, uniqueCode: 123, order: { orderNumber: 'BMS-1', totalPrice: 50000 } }) });
     const page = await svc.getUploadPage('raw');
     expect(page.uniqueCode).toBe(123);
-    expect(page.amount).toBe(50123); // exact transfer amount (base + code)
+    expect(page.amount).toBe(50123); // exact transfer amount (business + code)
+    expect(page.businessTotal).toBe(50000); // business total (Order.totalPrice)
   });
 
   it('404s (generic) on an invalid/expired/used token — no enumeration', async () => {
