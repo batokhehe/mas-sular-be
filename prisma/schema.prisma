@@ -882,6 +882,49 @@ model ProcessedEvent {
   @@index([processedAt])
 }
 
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+/// Enterprise structured log sink (additive — does NOT replace the Pino logger).
+/// One row per request/exception/worker event; correlated by `requestId`. Pruned
+/// by the retention worker (LOG_RETENTION_DAYS). Newest-first reads are index-backed.
+model SystemLog {
+  id                     String    @id @default(uuid())
+  createdAt              DateTime  @default(now())
+  level                  LogLevel  @default(INFO)
+  module                 String    @db.VarChar(64)
+  action                 String    @db.VarChar(96)
+  message                String    @db.Text
+  requestId              String?   @db.VarChar(64)
+  userId                 String?   @db.VarChar(36)
+  adminId                String?   @db.VarChar(36)
+  orderId                String?   @db.VarChar(36)
+  paymentId              String?   @db.VarChar(36)
+  shipmentId             String?   @db.VarChar(36)
+  inventoryReservationId String?   @db.VarChar(36)
+  ip                     String?   @db.VarChar(64)
+  method                 String?   @db.VarChar(8)
+  path                   String?   @db.VarChar(512)
+  statusCode             Int?
+  durationMs             Int?
+  metadata               Json?
+
+  // Newest-first list + the common filter facets (composite so the filter and the
+  // createdAt sort are served by one index).
+  @@index([createdAt])
+  @@index([level, createdAt])
+  @@index([module, createdAt])
+  @@index([statusCode, createdAt])
+  @@index([requestId])
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([userId])
+}
+
 enum NotificationChannel {
   EMAIL
   SMS

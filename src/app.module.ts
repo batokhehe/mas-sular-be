@@ -10,6 +10,7 @@ import { DatabaseModule } from './database/database.module';
 import { CacheInfrastructureModule } from './infrastructure/cache/cache.module';
 import { ConsumersModule } from './infrastructure/consumers/consumers.module';
 import { LifecycleModule } from './infrastructure/lifecycle/lifecycle.module';
+import { LoggingModule } from './infrastructure/logging/logging.module';
 import { MetricsModule } from './infrastructure/metrics/metrics.module';
 import { NotificationsModule } from './infrastructure/notifications/notifications.module';
 import { OutboxModule } from './infrastructure/outbox/outbox.module';
@@ -56,6 +57,7 @@ import { UploadModule } from './modules/upload/upload.module';
     MetricsModule,
     QueueModule,
     OutboxModule,
+    LoggingModule,
     NotificationsModule,
     ConsumersModule,
     LifecycleModule,

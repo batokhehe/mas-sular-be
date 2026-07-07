@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { LogService } from '../../infrastructure/logging/log.service';
 import { SHIPMENT_TRACKING_CONFIG, ShipmentTrackingConfig } from './shipment-tracking.config';
 import { ShipmentSyncService } from './shipment-sync.service';
 
@@ -17,6 +18,7 @@ export class ShipmentTrackingWorker implements OnApplicationBootstrap, OnModuleD
   constructor(
     private readonly sync: ShipmentSyncService,
     @Inject(SHIPMENT_TRACKING_CONFIG) private readonly config: ShipmentTrackingConfig,
+    @Optional() private readonly logs?: LogService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -45,11 +47,15 @@ export class ShipmentTrackingWorker implements OnApplicationBootstrap, OnModuleD
       return;
     }
     this.running = true;
+    const startedAt = Date.now();
     try {
       const updated = await this.sync.syncAll(this.config.batchSize);
       if (updated > 0) this.logger.log(`Shipment tracking updated ${updated} shipment(s)`);
+      this.logs?.write({ level: 'INFO', module: 'worker.shipment-tracking', action: 'tick', message: `shipment tracking: updated=${updated}`, durationMs: Date.now() - startedAt, metadata: { updated } });
     } catch (err) {
-      this.logger.error(`Shipment tracking tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Shipment tracking tick failed: ${message}`);
+      this.logs?.write({ level: 'ERROR', module: 'worker.shipment-tracking', action: 'tick.failed', message, durationMs: Date.now() - startedAt, metadata: { stack: err instanceof Error ? err.stack : undefined } });
     } finally {
       this.running = false;
       this.schedule();

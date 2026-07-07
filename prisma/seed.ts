@@ -156,6 +156,7 @@ async function main(): Promise<void> {
     { subject: 'DeliveryCoverage', action: 'create' },
     { subject: 'DeliveryCoverage', action: 'update' },
     { subject: 'DeliveryCoverage', action: 'delete' },
+    { subject: 'SystemLog', action: 'read' },
     { subject: 'dashboard', action: 'view' },
     { subject: 'products', action: 'view' },
     { subject: 'products', action: 'create' },

@@ -1,6 +1,7 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { PaymentStatus, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { LogService } from '../../infrastructure/logging/log.service';
 import { SHIPMENT_RECONCILIATION_CONFIG, ShipmentReconciliationConfig } from './shipment-reconciliation.config';
 import { ShipmentReconciliationMetrics } from './shipment-reconciliation.metrics';
 import { ShipmentService } from './shipment.service';
@@ -35,6 +36,8 @@ export class ShipmentReconciliationWorker implements OnApplicationBootstrap, OnM
     private readonly shipments: ShipmentService,
     private readonly metrics: ShipmentReconciliationMetrics,
     @Inject(SHIPMENT_RECONCILIATION_CONFIG) private readonly config: ShipmentReconciliationConfig,
+    // Optional so existing tests keep constructing positionally; persists tick outcomes.
+    @Optional() private readonly logs?: LogService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -74,11 +77,20 @@ export class ShipmentReconciliationWorker implements OnApplicationBootstrap, OnM
     this.running = true;
     this.inFlight = (async () => {
       try {
-        const { booked } = await this.reconcile();
+        const { booked, failed } = await this.reconcile();
         this.maybeHealthLog(booked);
+        if (booked > 0 || failed > 0) {
+          this.logs?.write({
+            level: failed > 0 ? 'WARN' : 'INFO', module: 'worker.shipment-reconciliation', action: 'tick',
+            message: `shipment reconciliation: booked=${booked} failed=${failed}`,
+            metadata: { booked, failed },
+          });
+        }
       } catch (err) {
         // Transient failure → retried on the next tick.
-        this.logger.error(`shipment reconciliation tick failed: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`shipment reconciliation tick failed: ${message}`);
+        this.logs?.write({ level: 'ERROR', module: 'worker.shipment-reconciliation', action: 'tick.failed', message, metadata: { stack: err instanceof Error ? err.stack : undefined } });
       }
     })();
     await this.inFlight;

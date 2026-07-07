@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Payment, PaymentMethod, PaymentStatus, ReservationStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { LogService } from '../../infrastructure/logging/log.service';
 import { OrderCancellationService } from '../orders/order-cancellation.service';
 import { PAYMENT_LIFECYCLE_CONFIG, PaymentLifecycleConfig } from './payment-lifecycle.config';
 import { PaymentLifecycleMetrics } from './payment-lifecycle.metrics';
@@ -36,6 +37,9 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
     private readonly cancellation: OrderCancellationService,
     private readonly metrics: PaymentLifecycleMetrics,
     @Inject(PAYMENT_LIFECYCLE_CONFIG) private readonly config: PaymentLifecycleConfig,
+    // Optional so existing unit tests (positional construction) keep working; when
+    // present, each tick's outcome is persisted to the SystemLog center.
+    @Optional() private readonly logs?: LogService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -74,10 +78,19 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
     this.inFlight = (async () => {
       try {
         // Expire first so an about-to-expire payment is not also reminded.
-        await this.runExpiry();
-        await this.runReminders();
+        const expired = await this.runExpiry();
+        const reminded = await this.runReminders();
+        if (expired > 0 || reminded > 0) {
+          this.logs?.write({
+            level: 'INFO', module: 'worker.payment-lifecycle', action: 'tick',
+            message: `payment lifecycle: expired=${expired} reminded=${reminded}`,
+            metadata: { expired, reminded },
+          });
+        }
       } catch (err) {
-        this.logger.error(`payment lifecycle tick failed: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`payment lifecycle tick failed: ${message}`);
+        this.logs?.write({ level: 'ERROR', module: 'worker.payment-lifecycle', action: 'tick.failed', message, metadata: { stack: err instanceof Error ? err.stack : undefined } });
       }
     })();
     await this.inFlight;

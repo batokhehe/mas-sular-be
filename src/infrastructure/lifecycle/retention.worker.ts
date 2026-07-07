@@ -1,5 +1,6 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { LogService } from '../logging/log.service';
 import { LIFECYCLE_CONFIG, LifecycleConfig } from './lifecycle.config';
 import { LifecycleMetrics } from './lifecycle.metrics';
 
@@ -41,6 +42,7 @@ export class RetentionWorker implements OnApplicationBootstrap, OnModuleDestroy 
     private readonly prisma: PrismaService,
     private readonly metrics: LifecycleMetrics,
     @Inject(LIFECYCLE_CONFIG) private readonly config: LifecycleConfig,
+    @Optional() private readonly logs?: LogService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -79,10 +81,15 @@ export class RetentionWorker implements OnApplicationBootstrap, OnModuleDestroy 
     if (this.stopped || this.running) return;
     this.running = true;
     this.inFlight = (async () => {
+      const startedAt = this.nowMs();
       try {
-        await this.runOnce();
+        const results = await this.runOnce();
+        const deleted = results.reduce((sum, r) => sum + r.deletedCount, 0);
+        this.logs?.write({ level: 'INFO', module: 'worker.retention', action: 'tick', message: `retention: deleted=${deleted} across ${results.length} policies`, durationMs: this.nowMs() - startedAt, metadata: { deleted, policies: results.length } });
       } catch (err) {
-        this.logger.error(`retention run failed: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`retention run failed: ${message}`);
+        this.logs?.write({ level: 'ERROR', module: 'worker.retention', action: 'tick.failed', message, durationMs: this.nowMs() - startedAt, metadata: { stack: err instanceof Error ? err.stack : undefined } });
       }
     })();
     await this.inFlight;

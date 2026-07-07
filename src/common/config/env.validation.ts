@@ -98,6 +98,12 @@ const baseSchema = z
     PAYMENT_UNIQUE_CODE_ENABLED: boolFlag,
     PAYMENT_UNIQUE_CODE_MIN: z.coerce.number().int().optional(),
     PAYMENT_UNIQUE_CODE_MAX: z.coerce.number().int().optional(),
+
+    // Enterprise logging center (additive). All optional; persistence + retention
+    // default on with a 90-day window.
+    SYSTEM_LOG_ENABLED: boolFlag.optional(),
+    SYSTEM_LOG_RETENTION_ENABLED: boolFlag.optional(),
+    LOG_RETENTION_DAYS: z.coerce.number().int().positive().optional(),
   })
   .passthrough(); // tolerate the many optional tuning vars (OUTBOX_*, NOTIFICATION_SENDER_*, RETENTION_*, ...)
 

@@ -1,6 +1,7 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ReservationStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { LogService } from '../../infrastructure/logging/log.service';
 import { INVENTORY_RESERVATION_CONFIG, InventoryReservationConfig } from './inventory-reservation.config';
 import { InventoryReservationMetrics } from './inventory-reservation.metrics';
 import { InventoryReservationService } from './inventory-reservation.service';
@@ -29,6 +30,7 @@ export class InventoryReservationWorker implements OnApplicationBootstrap, OnMod
     private readonly reservations: InventoryReservationService,
     private readonly metrics: InventoryReservationMetrics,
     @Inject(INVENTORY_RESERVATION_CONFIG) private readonly config: InventoryReservationConfig,
+    @Optional() private readonly logs?: LogService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -65,11 +67,15 @@ export class InventoryReservationWorker implements OnApplicationBootstrap, OnMod
     if (this.stopped || this.running) return;
     this.running = true;
     this.inFlight = (async () => {
+      const startedAt = this.nowMs();
       try {
         const released = await this.releaseExpired();
         this.maybeHealthLog(released);
+        this.logs?.write({ level: 'INFO', module: 'worker.inventory-reservation', action: 'tick', message: `inventory reservation: released=${released}`, durationMs: this.nowMs() - startedAt, metadata: { released } });
       } catch (err) {
-        this.logger.error(`inventory reservation tick failed: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`inventory reservation tick failed: ${message}`);
+        this.logs?.write({ level: 'ERROR', module: 'worker.inventory-reservation', action: 'tick.failed', message, durationMs: this.nowMs() - startedAt, metadata: { stack: err instanceof Error ? err.stack : undefined } });
       }
     })();
     await this.inFlight;
