@@ -3,6 +3,9 @@ import { LOG_CONFIG, loadLogConfig } from './log.config';
 import { LogService } from './log.service';
 import { SystemLogQueryService } from './system-log-query.service';
 import { SystemDashboardService } from './system-dashboard.service';
+import { RequestExplorerService } from './request-explorer.service';
+import { PerformanceProfilerService } from './performance-profiler.service';
+import { IncidentCenterService } from './incident-center.service';
 import { RequestLoggingMiddleware } from './request-logging.middleware';
 import { LogRetentionWorker } from './log-retention.worker';
 
@@ -23,9 +26,12 @@ import { LogRetentionWorker } from './log-retention.worker';
     LogService,
     SystemLogQueryService,
     SystemDashboardService,
+    RequestExplorerService,
+    PerformanceProfilerService,
+    IncidentCenterService,
     RequestLoggingMiddleware,
     LogRetentionWorker,
   ],
-  exports: [LogService, SystemLogQueryService, SystemDashboardService, RequestLoggingMiddleware],
+  exports: [LogService, SystemLogQueryService, SystemDashboardService, RequestExplorerService, PerformanceProfilerService, IncidentCenterService, RequestLoggingMiddleware],
 })
 export class LoggingModule {}

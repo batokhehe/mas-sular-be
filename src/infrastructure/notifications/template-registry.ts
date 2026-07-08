@@ -38,6 +38,10 @@ export class TemplateRegistry {
     this.register(NotificationChannel.EMAIL, 'order.shipped', { providerTemplateId: 'order.shipped' });
     this.register(NotificationChannel.EMAIL, 'order.delivered', { providerTemplateId: 'order.delivered' });
     this.register(NotificationChannel.EMAIL, 'shipment.status', { providerTemplateId: 'shipment.status' });
+    // Manual (admin-composed) templates — Customer Communication Center.
+    this.register(NotificationChannel.EMAIL, 'manual.order-update', { providerTemplateId: 'manual.order-update' });
+    this.register(NotificationChannel.EMAIL, 'manual.shipment-update', { providerTemplateId: 'manual.shipment-update' });
+    this.register(NotificationChannel.EMAIL, 'manual.custom', { providerTemplateId: 'manual.custom' });
 
     // WHATSAPP → Qontak template ids + parameter layout.
     this.register(NotificationChannel.WHATSAPP, 'order.transfer', {
@@ -91,6 +95,13 @@ export class TemplateRegistry {
       ],
       button: false,
     });
+    // Manual sends share ONE approved free-text Qontak template ({{1}} = message).
+    // resolve() rejects them with ConfigurationError until QONTAK_MANUAL_TEMPLATE_ID
+    // is set, and the communication API pre-checks that before queueing.
+    const manualBody = [{ key: '1', valueName: 'message', source: 'message' }];
+    this.register(NotificationChannel.WHATSAPP, 'manual.order-update', { providerTemplateId: qontak.manualTemplateId ?? '', body: manualBody, button: false });
+    this.register(NotificationChannel.WHATSAPP, 'manual.shipment-update', { providerTemplateId: qontak.manualTemplateId ?? '', body: manualBody, button: false });
+    this.register(NotificationChannel.WHATSAPP, 'manual.custom', { providerTemplateId: qontak.manualTemplateId ?? '', body: manualBody, button: false });
   }
 
   private key(channel: NotificationChannel, template: NotificationTemplate): string {

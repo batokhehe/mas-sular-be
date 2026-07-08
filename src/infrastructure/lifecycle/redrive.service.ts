@@ -24,6 +24,8 @@ export interface OutboxRedriveFilter {
 
 export interface NotificationRedriveFilter {
   id?: string;
+  /** Bulk selection (admin multi-select). Combined into one `id IN (...)` batch. */
+  ids?: string[];
   template?: string;
   channel?: string;
   createdAfter?: Date;
@@ -198,6 +200,10 @@ function buildNotificationWhere(f: NotificationRedriveFilter): { where: string; 
   if (f.id) {
     parts.push('`id` = ?');
     params.push(f.id);
+  }
+  if (f.ids && f.ids.length > 0) {
+    parts.push(`\`id\` IN (${f.ids.map(() => '?').join(', ')})`);
+    params.push(...f.ids);
   }
   if (f.template) {
     parts.push('`template` = ?');
