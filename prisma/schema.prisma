@@ -839,6 +839,9 @@ model OutboxEvent {
   @@index([status, nextAttemptAt])
   @@index([aggregateId, createdAt])
   @@index([status, createdAt])
+  // Queue Center: newest-first unfiltered list + event-name filter.
+  @@index([createdAt])
+  @@index([eventName, createdAt])
 }
 
 enum IdempotencyStatus {
@@ -923,6 +926,127 @@ model SystemLog {
   @@index([orderId])
   @@index([paymentId])
   @@index([userId])
+}
+
+/// Admin-facing notification (bell / notification center / push). Written by the
+/// event-driven notification worker — one row PER TARGET ADMIN (fan-out on write,
+/// so read state and badges are per-admin). Fully additive.
+model Notification {
+  id        String    @id @default(uuid())
+  eventType String    @db.VarChar(64)
+  category  String    @db.VarChar(32)
+  priority  String    @db.VarChar(16)
+  title     String    @db.VarChar(255)
+  message   String    @db.Text
+  url       String?   @db.VarChar(512)
+  icon      String?   @db.VarChar(64)
+  image     String?   @db.VarChar(512)
+  metadata  Json?
+  adminId   String?   @db.VarChar(36)
+  role      String?   @db.VarChar(64)
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([isRead, createdAt])
+  @@index([category, createdAt])
+  @@index([adminId, createdAt])
+  @@index([eventType])
+}
+
+/// Web-push (FCM) token registered by an admin browser/device.
+model PushSubscription {
+  id         String   @id @default(uuid())
+  adminId    String   @db.VarChar(36)
+  token      String   @db.VarChar(512)
+  browser    String?  @db.VarChar(64)
+  platform   String?  @db.VarChar(64)
+  device     String?  @db.VarChar(64)
+  userAgent  String?  @db.VarChar(512)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@unique([adminId, token(length: 191)])
+  @@index([adminId])
+  @@index([lastSeenAt])
+}
+
+/// Enterprise audit trail — HUMAN administrative actions (vs SystemLog = app
+/// events). Written fire-and-forget by the global AuditTrailInterceptor; fully
+/// additive (the legacy AuditLog table is untouched).
+model AuditTrail {
+  id         String   @id @default(uuid())
+  createdAt  DateTime @default(now())
+  adminId    String?  @db.VarChar(36)
+  adminName  String?  @db.VarChar(255)
+  ipAddress  String?  @db.VarChar(64)
+  userAgent  String?  @db.VarChar(512)
+  requestId  String?  @db.VarChar(64)
+  module     String   @db.VarChar(64)
+  entity     String   @db.VarChar(64)
+  entityId   String?  @db.VarChar(64)
+  entityName String?  @db.VarChar(255)
+  action     String   @db.VarChar(48)
+  before     Json?
+  after      Json?
+  diff       Json?
+  metadata   Json?
+  success    Boolean  @default(true)
+
+  @@index([createdAt])
+  @@index([module, createdAt])
+  @@index([entity, entityId])
+  @@index([adminId, createdAt])
+  @@index([requestId])
+}
+
+enum IncidentSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+/// Auto-detected operational incident (Incident Center). Deduplicated by `type`
+/// while OPEN/ACKNOWLEDGED (repeat detections bump count/lastSeen). Fully additive
+/// bookkeeping — never touches business flows.
+model Incident {
+  id             String           @id @default(uuid())
+  type           String           @db.VarChar(64)
+  severity       IncidentSeverity @default(MEDIUM)
+  status         IncidentStatus   @default(OPEN)
+  title          String           @db.VarChar(255)
+  description    String           @db.Text
+  source         String           @db.VarChar(64)
+  requestId      String?          @db.VarChar(64)
+  orderId        String?          @db.VarChar(36)
+  paymentId      String?          @db.VarChar(36)
+  shipmentId     String?          @db.VarChar(36)
+  worker         String?          @db.VarChar(64)
+  module         String?          @db.VarChar(64)
+  count          Int              @default(1)
+  firstSeen      DateTime         @default(now())
+  lastSeen       DateTime         @default(now())
+  acknowledgedAt DateTime?
+  acknowledgedBy String?          @db.VarChar(36)
+  resolvedAt     DateTime?
+  resolvedBy     String?          @db.VarChar(36)
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([status, severity, lastSeen])
+  @@index([type, status])
+  @@index([source, createdAt])
+  @@index([createdAt])
 }
 
 enum NotificationChannel {
