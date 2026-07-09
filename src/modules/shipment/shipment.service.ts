@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { NotificationChannel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { orderStatusSourcesFor } from '../orders/domain/order-status-transitions';
 import { CreateShipmentInput } from './domain/shipment-provider.interface';
 import { ShipmentProviderFactory } from './shipment-provider.factory';
 
@@ -10,6 +11,13 @@ const NON_TERMINAL_TRACKING: ShipmentStatus[] = [
   ShipmentStatus.PICKED_UP,
   ShipmentStatus.IN_TRANSIT,
 ];
+
+// Booking claim lease: a PENDING claim older than this is considered a crashed
+// attempt and may be reclaimed (@updatedAt is bumped by the claim itself).
+const BOOKING_LEASE_MS = 5 * 60 * 1000;
+
+/** Outcome error for a lost claim — callers/worker treat this as a skip, not a failure. */
+export const BOOKING_IN_PROGRESS = 'Shipment booking already in progress';
 
 export interface ShipmentOutcome {
   ok: boolean;
@@ -81,6 +89,32 @@ export class ShipmentService {
       throw new Error('Order address is missing a postal code');
     }
 
+    // CAS-claim the booking BEFORE the courier call (audit F3): exactly one caller
+    // (verify auto-create / admin retry / reconciliation worker) flips the row to
+    // PENDING; everyone else loses the claim and never reaches the provider — no
+    // duplicate courier bookings. A stale PENDING (crashed attempt) is reclaimable
+    // after the lease; the failure path releases the claim by marking FAILED.
+    const claim = await this.prisma.shipment.updateMany({
+      where: {
+        id: shipment.id,
+        trackingNumber: null,
+        OR: [
+          { status: { in: [ShipmentStatus.RATE_SELECTED, ShipmentStatus.FAILED] } },
+          { status: ShipmentStatus.PENDING, updatedAt: { lte: new Date(Date.now() - BOOKING_LEASE_MS) } },
+        ],
+      },
+      data: { status: ShipmentStatus.PENDING },
+    });
+    if (claim.count !== 1) {
+      // Lost the race: either a concurrent booking finished (return its tracking —
+      // idempotent success) or one is in flight (skip; never call the courier).
+      const current = await this.prisma.shipment.findUnique({ where: { id: shipment.id } });
+      if (current?.trackingNumber) {
+        return { ok: true, status: current.status, trackingNumber: current.trackingNumber };
+      }
+      return { ok: false, status: current?.status ?? shipment.status, error: BOOKING_IN_PROGRESS };
+    }
+
     const totalItems = order.items.reduce((sum, i) => sum + i.quantity, 0);
     const input: CreateShipmentInput = {
       orderId: order.id,
@@ -116,19 +150,26 @@ export class ShipmentService {
           providerPayload: this.json(result.rawPayload),
         },
       });
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: OrderStatus.SHIPPED,
-          trackingNumber: result.trackingNumber,
-          events: { create: { status: OrderStatus.SHIPPED, note: `Shipment created (${providerName})` } },
-        },
+      // Legal-transition CAS (audit F4): only an order still in a shippable state
+      // flips to SHIPPED. An order cancelled while the courier call was in flight
+      // keeps CANCELLED (tracking stays recorded on the shipment for ops) and the
+      // customer is NOT told it shipped.
+      const flip = await tx.order.updateMany({
+        where: { id: order.id, status: { in: orderStatusSourcesFor(OrderStatus.SHIPPED) } },
+        data: { status: OrderStatus.SHIPPED, trackingNumber: result.trackingNumber },
       });
-      await this.enqueueWhatsApp(tx, 'order.shipped', order, {
-        provider: providerName,
-        service: order.shippingServiceName ?? order.shippingService ?? shipment.service,
-        tracking: result.trackingNumber,
-      });
+      if (flip.count === 1) {
+        await tx.orderEvent.create({
+          data: { orderId: order.id, status: OrderStatus.SHIPPED, note: `Shipment created (${providerName})` },
+        });
+        await this.enqueueWhatsApp(tx, 'order.shipped', order, {
+          provider: providerName,
+          service: order.shippingServiceName ?? order.shippingService ?? shipment.service,
+          tracking: result.trackingNumber,
+        });
+      } else {
+        this.logger.warn({ event: 'shipment.order_not_shippable', orderId: order.id, tracking: result.trackingNumber });
+      }
     });
 
     this.logger.log({ event: 'shipment.created', orderId, provider: providerName, tracking: result.trackingNumber });
@@ -185,18 +226,21 @@ export class ShipmentService {
             data: { status: result.status, providerPayload: this.json(result.rawPayload) },
           });
           if (result.status === ShipmentStatus.DELIVERED) {
-            await tx.order.update({
-              where: { id: shipment.orderId },
-              data: {
-                status: OrderStatus.DELIVERED,
-                events: { create: { status: OrderStatus.DELIVERED, note: 'Delivered (courier tracking)' } },
-              },
+            // Legal-transition CAS (audit F4): never resurrect a CANCELLED order.
+            const flip = await tx.order.updateMany({
+              where: { id: shipment.orderId, status: { in: orderStatusSourcesFor(OrderStatus.DELIVERED) } },
+              data: { status: OrderStatus.DELIVERED },
             });
-            await this.enqueueWhatsApp(tx, 'order.delivered', shipment.order, {
-              provider: shipment.provider,
-              service: shipment.service,
-              tracking: shipment.trackingNumber ?? '',
-            });
+            if (flip.count === 1) {
+              await tx.orderEvent.create({
+                data: { orderId: shipment.orderId, status: OrderStatus.DELIVERED, note: 'Delivered (courier tracking)' },
+              });
+              await this.enqueueWhatsApp(tx, 'order.delivered', shipment.order, {
+                provider: shipment.provider,
+                service: shipment.service,
+                tracking: shipment.trackingNumber ?? '',
+              });
+            }
           }
         });
         updated += 1;

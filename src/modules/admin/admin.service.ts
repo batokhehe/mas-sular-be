@@ -15,6 +15,7 @@ import {
   VerifyAdminPaymentDto,
 } from './application/dto/admin-operations.dto';
 import { OrderCancellationService } from '../orders/order-cancellation.service';
+import { orderStatusSourcesFor } from '../orders/domain/order-status-transitions';
 import { CreateCategoryDto } from './application/dto/create-category.dto';
 import { CreateProductDto } from './application/dto/create-product.dto';
 import { CreatePromoDto } from './application/dto/create-promo.dto';
@@ -371,7 +372,12 @@ export class AdminService {
   }
 
   async updateOrderStatus(id: string, dto: UpdateOrderStatusDto) {
-    await this.getOrder(id);
+    const current = await this.getOrder(id);
+
+    // Idempotent no-op: already in the requested status → no event, no outbox.
+    if (current.status === dto.status) {
+      return this.prisma.order.findUnique({ where: { id }, include: { payment: true, shipment: true } });
+    }
 
     if (dto.status === OrderStatus.CANCELLED) {
       // Cancellation restocks inventory exactly once via the shared transition;
@@ -398,15 +404,23 @@ export class AdminService {
       }, { timeout: 10000 });
     }
 
-    // Non-CANCELLED transitions: status update (+ OrderEvent) and the
-    // order.status_updated event commit atomically; outbox is last.
+    // Non-CANCELLED transitions: legal-transition CAS (audit F4) — the status only
+    // flips when the CURRENT status may legally move to the target (never out of
+    // CANCELLED/COMPLETED, never backwards). Status + OrderEvent + outbox commit
+    // atomically; a lost CAS (concurrent transition) is a 409, not a silent write.
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.update({
+      const flip = await tx.order.updateMany({
+        where: { id, status: { in: orderStatusSourcesFor(dto.status) } },
+        data: { status: dto.status },
+      });
+      if (flip.count !== 1) {
+        throw new ConflictException(`Order cannot transition from ${current.status} to ${dto.status}`);
+      }
+      await tx.orderEvent.create({
+        data: { orderId: id, status: dto.status, note: dto.note ?? `Order marked as ${dto.status}` },
+      });
+      const order = await tx.order.findUniqueOrThrow({
         where: { id },
-        data: {
-          status: dto.status,
-          events: { create: { status: dto.status, note: dto.note ?? `Order marked as ${dto.status}` } },
-        },
         include: { payment: true, shipment: true },
       });
       await tx.outboxEvent.create({

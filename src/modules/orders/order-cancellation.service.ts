@@ -66,10 +66,16 @@ export class OrderCancellationService {
     releaseStatus: ReservationStatus,
   ): Promise<void> {
     if (this.inventory) {
-      const { handled } = await this.inventory.releaseForOrder(tx, orderId, releaseStatus, note);
-      if (handled) return; // reservations existed → stock handled by the release
+      await this.inventory.releaseForOrder(tx, orderId, releaseStatus, note);
+      // The legacy fallback below is ONLY for pre-reservation orders (their stock
+      // was decremented at checkout). A reservation-era order whose reservations
+      // are already terminal (e.g. expired by the reservation worker before this
+      // cancellation) must NOT fall through — RESERVED never deducted stock, so
+      // the fallback increment would inflate inventory (audit F2).
+      const reservationRows = await tx.inventoryReservation.count({ where: { orderId } });
+      if (reservationRows > 0) return;
     }
-    // Legacy fallback.
+    // Legacy fallback (pre-reservation orders only).
     const items = await tx.orderItem.findMany({ where: { orderId }, select: { productId: true, quantity: true } });
     const quantityByProduct = new Map<string, number>();
     for (const item of items) {

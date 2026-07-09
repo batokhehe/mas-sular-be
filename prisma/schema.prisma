@@ -842,9 +842,6 @@ model OutboxEvent {
   // Queue Center: newest-first unfiltered list + event-name filter.
   @@index([createdAt])
   @@index([eventName, createdAt])
-  // Queue Center: newest-first unfiltered list + event-name filter.
-  @@index([createdAt])
-  @@index([eventName, createdAt])
 }
 
 enum IdempotencyStatus {

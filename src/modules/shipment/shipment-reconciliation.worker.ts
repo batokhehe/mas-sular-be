@@ -4,7 +4,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { LogService } from '../../infrastructure/logging/log.service';
 import { SHIPMENT_RECONCILIATION_CONFIG, ShipmentReconciliationConfig } from './shipment-reconciliation.config';
 import { ShipmentReconciliationMetrics } from './shipment-reconciliation.metrics';
-import { ShipmentService } from './shipment.service';
+import { BOOKING_IN_PROGRESS, ShipmentService } from './shipment.service';
 
 /**
  * Recovers orders that were paid but never got a shipment booked — e.g. the process
@@ -124,29 +124,15 @@ export class ShipmentReconciliationWorker implements OnApplicationBootstrap, OnM
     let failed = 0;
     for (const { orderId } of candidates) {
       if (this.stopped) break;
-      // CAS-claim: exactly one worker/instance flips the row → no duplicate booking.
-      // The predicate mirrors the candidate query: a freshly-claimed PENDING row
-      // (updatedAt > cutoff) no longer matches, so a concurrent worker gets count 0.
-      // (@updatedAt is bumped on the claim, extending the lease by delayMs.)
-      const claim = await this.prisma.shipment.updateMany({
-        where: {
-          orderId,
-          trackingNumber: null,
-          OR: [
-            { status: ShipmentStatus.RATE_SELECTED },
-            { status: ShipmentStatus.PENDING, updatedAt: { lte: cutoff } },
-          ],
-        },
-        data: { status: ShipmentStatus.PENDING },
-      });
-      if (claim.count !== 1) {
-        // Lost the race (another instance claimed/booked it) → safely skip.
+      // Booking claims moved INTO ShipmentService.createForOrder (audit F3) so
+      // every path — verify auto-create, admin retry, this worker — shares ONE
+      // CAS claim. A lost claim comes back as BOOKING_IN_PROGRESS → skip, not a
+      // failure (another caller is booking or just booked it).
+      const outcome = await this.shipments.createForOrderSafe(orderId);
+      if (!outcome.ok && outcome.error === BOOKING_IN_PROGRESS) {
         this.logger.log({ event: 'reconciliation.skipped', orderId, reason: 'not_claimed' });
         continue;
       }
-
-      // Reuse the existing idempotent booking (skips if trackingNumber already set).
-      const outcome = await this.shipments.createForOrderSafe(orderId);
       if (outcome.ok) {
         booked += 1;
         this.metrics.success();
