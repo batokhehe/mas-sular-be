@@ -1052,54 +1052,6 @@ model AuditTrail {
   @@index([requestId])
 }
 
-enum IncidentSeverity {
-  INFO
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
-}
-
-enum IncidentStatus {
-  OPEN
-  ACKNOWLEDGED
-  RESOLVED
-}
-
-/// Auto-detected operational incident (Incident Center). Deduplicated by `type`
-/// while OPEN/ACKNOWLEDGED (repeat detections bump count/lastSeen). Fully additive
-/// bookkeeping — never touches business flows.
-model Incident {
-  id             String           @id @default(uuid())
-  type           String           @db.VarChar(64)
-  severity       IncidentSeverity @default(MEDIUM)
-  status         IncidentStatus   @default(OPEN)
-  title          String           @db.VarChar(255)
-  description    String           @db.Text
-  source         String           @db.VarChar(64)
-  requestId      String?          @db.VarChar(64)
-  orderId        String?          @db.VarChar(36)
-  paymentId      String?          @db.VarChar(36)
-  shipmentId     String?          @db.VarChar(36)
-  worker         String?          @db.VarChar(64)
-  module         String?          @db.VarChar(64)
-  count          Int              @default(1)
-  firstSeen      DateTime         @default(now())
-  lastSeen       DateTime         @default(now())
-  acknowledgedAt DateTime?
-  acknowledgedBy String?          @db.VarChar(36)
-  resolvedAt     DateTime?
-  resolvedBy     String?          @db.VarChar(36)
-  metadata       Json?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-
-  @@index([status, severity, lastSeen])
-  @@index([type, status])
-  @@index([source, createdAt])
-  @@index([createdAt])
-}
-
 enum NotificationChannel {
   EMAIL
   SMS

@@ -65,7 +65,7 @@ function build() {
 describe('queue-center.util', () => {
   it('extractRelated pulls entity refs from a payload (drawer links)', () => {
     expect(extractRelated({ orderId: 'o1', paymentId: 'p1', orderNumber: 'BMS-1', requestId: 'req-1', junk: 1 })).toEqual({
-      requestId: 'req-1', orderId: 'o1', orderNumber: 'BMS-1', paymentId: 'p1', shipmentId: null,
+      requestId: 'req-1', orderId: 'o1', orderNumber: 'BMS-1', paymentId: 'p1', shipmentId: null, customerId: null,
     });
     expect(extractRelated(null).orderId).toBeNull();
   });

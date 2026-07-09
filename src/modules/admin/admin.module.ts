@@ -20,7 +20,7 @@ import { AdminOrderNotesService } from './admin-order-notes.service';
 
 @Module({
   imports: [ShipmentModule, LifecycleModule],
-  controllers: [AdminCatalogController, AdminCmsController, AdminOperationsController, AdminSystemLogController, AdminQueueController, AdminIncidentController, AdminNotificationCenterController, AdminCommunicationController, AdminQueueController, AdminIncidentController, AdminNotificationCenterController, AdminAuditController, AdminBellController, AdminPushController],
+  controllers: [AdminCatalogController, AdminCmsController, AdminOperationsController, AdminSystemLogController, AdminQueueController, AdminIncidentController, AdminNotificationCenterController, AdminCommunicationController, AdminAuditController, AdminBellController, AdminPushController],
   providers: [AdminService, ExecutiveDashboardService, AdminOrderNotesService, OrderCancellationService, CustomerCommunicationService, PermissionGuard],
   exports: [AdminService],
 })

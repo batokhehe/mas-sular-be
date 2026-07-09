@@ -80,13 +80,18 @@ async function bootstrap(): Promise<void> {
     },
   );
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Bakso Mas Sular API')
-    .setDescription('Storefront, checkout, admin CMS, payment, and shipping APIs.')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swaggerConfig));
+  // Swagger enumerates the full API surface (incl. admin/system routes), so it is
+  // OFF in production unless SWAGGER_ENABLED=true explicitly opts back in.
+  const swaggerEnabled = process.env.SWAGGER_ENABLED === 'true' || process.env.NODE_ENV !== 'production';
+  if (swaggerEnabled) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Bakso Mas Sular API')
+      .setDescription('Storefront, checkout, admin CMS, payment, and shipping APIs.')
+      .setVersion('1.0')
+      .addBearerAuth()
+      .build();
+    SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swaggerConfig));
+  }
 
   await app.listen(Number(process.env.PORT ?? 3001), '0.0.0.0');
 }

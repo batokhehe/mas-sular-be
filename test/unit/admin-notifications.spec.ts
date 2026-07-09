@@ -1,4 +1,11 @@
+import { UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
 import { buildAdminNotification, registerNotificationMapper, supportedNotificationEvents } from '../../src/infrastructure/admin-notifications/admin-notification.builder';
+import { BellListQueryDto, ManualNotificationDto } from '../../src/modules/admin/application/dto/bell-query.dto';
+import { AdminBellController } from '../../src/modules/admin/presentation/admin-bell.controller';
+import { MetricsRegistry } from '../../src/infrastructure/metrics/metrics.registry';
 import { AdminNotificationRepository } from '../../src/infrastructure/admin-notifications/admin-notification.repository';
 import { AdminNotificationDispatcher } from '../../src/infrastructure/admin-notifications/admin-notification.dispatcher';
 import { AdminNotificationConsumer } from '../../src/infrastructure/admin-notifications/admin-notification.consumer';
@@ -206,5 +213,117 @@ describe('worker (consumer processing)', () => {
     expect(await consumer.process('m2', { name: 'order.status_updated', payload: { status: 'PROCESSING' } })).toBe('skipped');
     expect(prisma.processedEvent.create).toHaveBeenCalled();
     expect(dispatcher.dispatch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------- production hardening (this pass) ----------------
+
+describe('SSE stream RBAC (token-claim authorization)', () => {
+  const SECRET = 'test-stream-secret';
+  const jwt = new JwtService({});
+
+  function buildController(activeAdmin = true) {
+    const prisma = { admin: { findFirst: jest.fn().mockResolvedValue(activeAdmin ? { id: 'a1' } : null) } };
+    const hub = { register: jest.fn(), activeConnections: jest.fn().mockReturnValue(0) };
+    const controller = new AdminBellController(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {} as any, {} as any, hub as any, new AdminNotificationMetrics(), prisma as any,
+    );
+    return { controller, hub, prisma };
+  }
+
+  beforeAll(() => {
+    process.env.JWT_ADMIN_ACCESS_SECRET = SECRET;
+  });
+
+  it('registers the connection for an active admin holding Notification.read', async () => {
+    const { controller, hub } = buildController();
+    const token = jwt.sign({ sub: 'a1', permissions: ['Notification.read'] }, { secret: SECRET });
+    await controller.stream({} as never, {} as never, token);
+    expect(hub.register).toHaveBeenCalledWith('a1', expect.anything());
+  });
+
+  it('SUPER_ADMIN streams without an explicit grant', async () => {
+    const { controller, hub } = buildController();
+    const token = jwt.sign({ sub: 'a1', role: 'SUPER_ADMIN', permissions: [] }, { secret: SECRET });
+    await controller.stream({} as never, {} as never, token);
+    expect(hub.register).toHaveBeenCalled();
+  });
+
+  it('rejects a valid token WITHOUT Notification.read (RBAC gap closed)', async () => {
+    const { controller, hub } = buildController();
+    const token = jwt.sign({ sub: 'a1', role: 'OPS', permissions: ['Order.read'] }, { secret: SECRET });
+    await expect(controller.stream({} as never, {} as never, token)).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(hub.register).not.toHaveBeenCalled();
+  });
+
+  it('rejects forged/missing tokens and inactive admins', async () => {
+    const { controller, hub } = buildController();
+    await expect(controller.stream({} as never, {} as never, undefined)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(controller.stream({} as never, {} as never, 'garbage.token.here')).rejects.toBeInstanceOf(UnauthorizedException);
+    const forged = jwt.sign({ sub: 'a1', permissions: ['Notification.read'] }, { secret: 'wrong-secret' });
+    await expect(controller.stream({} as never, {} as never, forged)).rejects.toBeInstanceOf(UnauthorizedException);
+
+    const inactive = buildController(false);
+    const token = jwt.sign({ sub: 'a1', permissions: ['Notification.read'] }, { secret: SECRET });
+    await expect(inactive.controller.stream({} as never, {} as never, token)).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(hub.register).not.toHaveBeenCalled();
+  });
+});
+
+describe('bell DTO validation (malformed input → 400, never 500)', () => {
+  it('rejects non-numeric / out-of-range limits that previously became take: NaN', () => {
+    const bad = plainToInstance(BellListQueryDto, { limit: 'abc' }, { enableImplicitConversion: true });
+    expect(validateSync(bad).length).toBeGreaterThan(0);
+    const tooBig = plainToInstance(BellListQueryDto, { limit: '100' }, { enableImplicitConversion: true });
+    expect(validateSync(tooBig).length).toBeGreaterThan(0);
+    const ok = plainToInstance(BellListQueryDto, { limit: '20', unread: 'true', category: 'ORDER' }, { enableImplicitConversion: true });
+    expect(validateSync(ok)).toHaveLength(0);
+    expect(ok.limit).toBe(20);
+    expect(ok.unread).toBe(true);
+  });
+
+  it('unread only accepts the literal "true" (implicit-conversion pitfall covered)', () => {
+    const falsy = plainToInstance(BellListQueryDto, { unread: 'false' }, { enableImplicitConversion: true });
+    expect(falsy.unread).toBe(false);
+    expect(validateSync(falsy)).toHaveLength(0);
+  });
+
+  it('manual notification url must be an in-app relative path', () => {
+    const base = { title: 'T', message: 'M' };
+    expect(validateSync(plainToInstance(ManualNotificationDto, { ...base, url: '/orders/o1' }))).toHaveLength(0);
+    expect(validateSync(plainToInstance(ManualNotificationDto, { ...base }))).toHaveLength(0); // url optional
+    for (const url of ['https://evil.example', '//evil.example', 'javascript:alert(1)', 'orders/o1']) {
+      expect(validateSync(plainToInstance(ManualNotificationDto, { ...base, url })).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('prom-client bridge (dual-emit observability)', () => {
+  it('registers and increments platform metrics in the shared registry', async () => {
+    const registry = new MetricsRegistry();
+    const metrics = new AdminNotificationMetrics(registry);
+    metrics.created(3);
+    metrics.pushFailed();
+    metrics.deadLettered();
+    metrics.sseConnected();
+    metrics.sseConnected();
+    metrics.sseDisconnected();
+    metrics.observeProcessing(120);
+
+    const exposed = await registry.expose();
+    expect(exposed).toContain('masular_admin_notifications_created_total 3');
+    expect(exposed).toContain('masular_admin_push_failed_total 1');
+    expect(exposed).toContain('masular_admin_notification_dead_lettered_total 1');
+    expect(exposed).toContain('masular_admin_sse_connections 1');
+    expect(exposed).toContain('masular_admin_notification_processing_seconds_count 1');
+    // JSON snapshot (admin UI endpoint) stays in lockstep.
+    expect(metrics.snapshot()).toMatchObject({ notificationsCreated: 3, pushFailed: 1, activeSseConnections: 1 });
+  });
+
+  it('still works standalone without a registry (unit-test seam preserved)', () => {
+    const metrics = new AdminNotificationMetrics();
+    metrics.created();
+    expect(metrics.snapshot().notificationsCreated).toBe(1);
   });
 });

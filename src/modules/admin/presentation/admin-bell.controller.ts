@@ -1,10 +1,10 @@
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards,
+  BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { JwtService } from '@nestjs/jwt';
-import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { hasAllPermissions } from '../../../common/auth/permission-check.util';
 import { AdminUser, CurrentAdmin } from '../../../common/decorators/current-admin.decorator';
 import { Permissions } from '../../../common/decorators/permissions.decorator';
 import { AdminGuard } from '../../../common/guards/admin.guard';
@@ -15,20 +15,13 @@ import { AdminNotificationDispatcher } from '../../../infrastructure/admin-notif
 import { AdminNotificationMetrics } from '../../../infrastructure/admin-notifications/admin-notification.metrics';
 import { AdminNotificationRepository } from '../../../infrastructure/admin-notifications/admin-notification.repository';
 import { SseHubService } from '../../../infrastructure/admin-notifications/sse-hub.service';
+import { BellListQueryDto, ManualNotificationDto, RegisterPushDto } from '../application/dto/bell-query.dto';
 
-class RegisterPushDto {
-  @IsString() @MinLength(10) @MaxLength(512) token!: string;
-  @IsOptional() @IsString() browser?: string;
-  @IsOptional() @IsString() platform?: string;
-  @IsOptional() @IsString() device?: string;
-}
-
-class ManualNotificationDto {
-  @IsString() @MinLength(1) @MaxLength(255) title!: string;
-  @IsString() @MinLength(1) @MaxLength(2000) message!: string;
-  @IsOptional() @IsString() url?: string;
-  @IsOptional() @IsIn(['ORDER', 'PAYMENT', 'INVENTORY', 'SYSTEM', 'SECURITY', 'AUDIT']) category?: string;
-  @IsOptional() @IsIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']) priority?: string;
+/** Claims carried by the admin access token (mirrors AdminJwtPayload). */
+interface StreamTokenClaims {
+  sub?: string;
+  role?: string | null;
+  permissions?: string[];
 }
 
 /**
@@ -52,19 +45,13 @@ export class AdminBellController {
   @UseGuards(AdminGuard, PermissionGuard)
   @Permissions('Notification.read')
   @Get()
-  list(
-    @CurrentAdmin() admin: AdminUser,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
-    @Query('unread') unread?: string,
-    @Query('category') category?: string,
-  ) {
+  list(@CurrentAdmin() admin: AdminUser, @Query() query: BellListQueryDto) {
     return this.repository.list({
       adminId: admin.sub,
-      cursor: cursor || undefined,
-      limit: limit ? Number(limit) : undefined,
-      unread: unread === 'true',
-      category: category || undefined,
+      cursor: query.cursor,
+      limit: query.limit,
+      unread: query.unread === true,
+      category: query.category,
     });
   }
 
@@ -91,17 +78,21 @@ export class AdminBellController {
   async stream(@Req() req: Request, @Res() res: Response, @Query('token') token?: string) {
     const secret = process.env.JWT_ADMIN_ACCESS_SECRET;
     if (!token || !secret) throw new UnauthorizedException('Missing stream token');
-    let adminId: string;
+    let claims: StreamTokenClaims;
     try {
-      const payload = this.jwt.verify<{ sub?: string }>(token, { secret });
-      if (!payload.sub) throw new Error('no sub');
-      adminId = payload.sub;
+      claims = this.jwt.verify<StreamTokenClaims>(token, { secret });
+      if (!claims.sub) throw new Error('no sub');
     } catch {
       throw new UnauthorizedException('Invalid stream token');
     }
-    const admin = await this.prisma.admin.findFirst({ where: { id: adminId, isActive: true }, select: { id: true } });
+    // Same RBAC as every sibling endpoint (guards can't run here — the JWT rides
+    // as a query param). Claims are the same source PermissionGuard reads.
+    if (!hasAllPermissions(claims, ['Notification.read'])) {
+      throw new UnauthorizedException('Missing Notification.read permission');
+    }
+    const admin = await this.prisma.admin.findFirst({ where: { id: claims.sub, isActive: true }, select: { id: true } });
     if (!admin) throw new UnauthorizedException('Admin account is no longer active');
-    this.sseHub.register(adminId, res);
+    this.sseHub.register(claims.sub, res);
   }
 
   @UseGuards(AdminGuard, PermissionGuard)
@@ -128,7 +119,7 @@ export class AdminBellController {
   @Post('manual')
   async manual(@Body() dto: ManualNotificationDto, @CurrentAdmin() admin: AdminUser) {
     const draft = buildAdminNotification('manual.notification', { ...dto });
-    if (!draft) throw new UnauthorizedException('Invalid manual notification');
+    if (!draft) throw new BadRequestException('Invalid manual notification');
     draft.metadata = { ...(draft.metadata ?? {}), sentBy: admin.sub };
     const created = await this.dispatcher.dispatch(draft);
     return { created };

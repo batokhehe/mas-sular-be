@@ -2,7 +2,7 @@ import { Inject, Injectable, NestMiddleware } from '@nestjs/common';
 import { LogLevel } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { redactSensitivePath } from '../../common/logging/redact';
+import { acceptableRequestId, redactSensitivePath, redactSensitiveQuery } from '../../common/logging/redact';
 import { LOG_CONFIG, LogConfig } from './log.config';
 import { LogService } from './log.service';
 import { runWithRequestContext } from './request-context';
@@ -35,7 +35,9 @@ export class RequestLoggingMiddleware implements NestMiddleware {
       return;
     }
 
-    const requestId = String((req.headers['x-request-id'] as string | undefined) ?? randomUUID());
+    // Inbound correlation ids are honored only when they look like safe tokens;
+    // anything else is replaced so logs cannot be polluted or oversized.
+    const requestId = acceptableRequestId(req.headers['x-request-id']) ?? randomUUID();
     const path = redactSensitivePath(rawPath);
     const ip = this.clientIp(req);
     res.setHeader('X-Request-Id', requestId);
@@ -63,7 +65,9 @@ export class RequestLoggingMiddleware implements NestMiddleware {
         orderId: p.orderId ?? (rawPath.includes('/orders/') ? p.id : undefined) ?? null,
         paymentId: p.paymentId ?? null,
         shipmentId: p.shipmentId ?? null,
-        metadata: { query: req.query, params: p, userAgent: req.headers['user-agent'] ?? null },
+        // Credential-bearing query values (e.g. the SSE stream's ?token= JWT) are
+        // redacted BEFORE persistence — SystemLog readers must never see them.
+        metadata: { query: redactSensitiveQuery(req.query), params: p, userAgent: req.headers['user-agent'] ?? null },
       });
     });
 

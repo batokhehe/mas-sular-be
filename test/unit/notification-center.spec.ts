@@ -64,7 +64,7 @@ describe('NotificationCenterService.overview', () => {
     expect(cache.set).toHaveBeenCalledWith('admin:notification-center', expect.any(Object), 30_000);
     cache.get.mockResolvedValue({ cached: true });
     expect(await service.overview()).toEqual({ cached: true });
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2); // only the first compute
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3); // only the first compute (counters + trend + hourly)
   });
 });
 
