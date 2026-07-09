@@ -82,6 +82,16 @@ export class NotificationMessageBuilder {
         accountName: account.accountName,
         accountNumber: account.accountNumber,
       };
+    } else if (template === 'manual.order-update' || template === 'manual.shipment-update' || template === 'manual.custom') {
+      // Admin-composed message (Customer Communication Center) — free text only,
+      // no business lookups.
+      variables = {
+        template,
+        customerName,
+        orderNumber,
+        message: String(p.message ?? ''),
+        ...(p.subject ? { subject: String(p.subject) } : {}),
+      };
     } else {
       variables = {
         template: 'order.cod',

@@ -102,6 +102,26 @@ export class TemplateRenderer {
             `Pengiriman pesanan ${payload.orderNumber ?? ''} ${payload.statusLabel ?? ''}.\n\n` +
             `Kurir: ${payload.shippingProvider ?? ''}\nNomor Resi: ${payload.trackingNumber ?? ''}`,
         };
+      // ---- Manual (admin-composed) templates — Customer Communication Center ----
+      case 'manual.order-update':
+        return {
+          subject: `Update pesanan ${payload.orderNumber ?? ''}`,
+          body:
+            `Halo ${payload.customerName ?? 'Pelanggan'}, ada pembaruan untuk pesanan ` +
+            `${payload.orderNumber ?? ''}:\n\n${payload.message ?? ''}`,
+        };
+      case 'manual.shipment-update':
+        return {
+          subject: `Update pengiriman pesanan ${payload.orderNumber ?? ''}`,
+          body:
+            `Halo ${payload.customerName ?? 'Pelanggan'}, update pengiriman untuk pesanan ` +
+            `${payload.orderNumber ?? ''}:\n\n${payload.message ?? ''}`,
+        };
+      case 'manual.custom':
+        return {
+          subject: String(payload.subject ?? 'Informasi dari Bakso Mas Sular'),
+          body: `Halo ${payload.customerName ?? 'Pelanggan'},\n\n${payload.message ?? ''}`,
+        };
       default:
         throw new PermanentSendError(`Unknown notification template: ${template}`);
     }

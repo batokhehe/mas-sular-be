@@ -6,7 +6,16 @@ export type NotificationTemplate =
   | 'order.cod'
   | 'order.shipped'
   | 'order.delivered'
-  | 'shipment.status';
+  | 'shipment.status'
+  // Admin-composed messages (Customer Communication Center). Same outbox +
+  // sender-worker path as automatic notifications.
+  | 'manual.order-update'
+  | 'manual.shipment-update'
+  | 'manual.custom';
+
+/** The manual (admin-composed) template ids, for validation at the API edge. */
+export const MANUAL_TEMPLATES = ['manual.order-update', 'manual.shipment-update', 'manual.custom'] as const;
+export type ManualTemplate = (typeof MANUAL_TEMPLATES)[number];
 
 export interface NotificationRecipient {
   name: string;
@@ -65,6 +74,16 @@ export type NotificationVariables =
       shippingProvider: string;
       shippingService: string;
       trackingNumber: string;
+    }
+  | {
+      template: ManualTemplate;
+      customerName: string;
+      /** Empty for manual.custom messages not tied to an order. */
+      orderNumber: string;
+      /** Admin-composed message body (fills the single WhatsApp body slot). */
+      message: string;
+      /** Email subject override (manual.custom only; templates derive their own). */
+      subject?: string;
     };
 
 /** The ONE contract shared by every provider. Presentation is mapped inside each provider. */

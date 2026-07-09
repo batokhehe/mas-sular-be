@@ -163,6 +163,7 @@ async function main(): Promise<void> {
     { subject: 'Incident', action: 'manage' },
     { subject: 'Notification', action: 'read' },
     { subject: 'Notification', action: 'resend' },
+    { subject: 'Notification', action: 'send' },
     { subject: 'Audit', action: 'read' },
     { subject: 'Audit', action: 'export' },
     { subject: 'Notification', action: 'manage' },
