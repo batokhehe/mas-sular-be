@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const SHIPMENT_RECONCILIATION_CONFIG = 'SHIPMENT_RECONCILIATION_CONFIG';
 
 export interface ShipmentReconciliationConfig {
@@ -10,11 +11,6 @@ export interface ShipmentReconciliationConfig {
    *  reclaim threshold for a shipment left mid-claim by a crashed reconciliation run. */
   delayMs: number;
   healthLogIntervalMs: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadShipmentReconciliationConfig(env: NodeJS.ProcessEnv = process.env): ShipmentReconciliationConfig {

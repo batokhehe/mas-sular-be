@@ -1,3 +1,4 @@
+import { nonNegativeInt as positiveInt } from '../../common/utils/number.util';
 export const QONTAK_CONFIG = 'QONTAK_CONFIG';
 
 export interface QontakConfig {
@@ -15,11 +16,6 @@ export interface QontakConfig {
   timeoutMs: number;
   /** In-call immediate retries for transient network/5xx (complements the durable outbox retry). */
   maxRetry: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadQontakConfig(env: NodeJS.ProcessEnv = process.env): QontakConfig {

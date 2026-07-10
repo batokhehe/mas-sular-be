@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const PAYMENT_LIFECYCLE_CONFIG = 'PAYMENT_LIFECYCLE_CONFIG';
 
 export interface PaymentLifecycleConfig {
@@ -17,11 +18,6 @@ export interface PaymentLifecycleConfig {
 }
 
 const HOUR = 60 * 60 * 1000;
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
-}
 
 function nonNegativeInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);

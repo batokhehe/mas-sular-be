@@ -100,11 +100,29 @@ describe('repository', () => {
     expect(await repo.markAllRead('a1')).toEqual({ read: 3 });
   });
 
-  it('cleanup prunes old notifications + stale tokens', async () => {
+  it('cleanup prunes old notifications (LIMIT-batched raw delete) + stale tokens', async () => {
     const { repo, prisma } = build();
-    prisma.notification.deleteMany = jest.fn().mockResolvedValue({ count: 9 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (prisma as any).$executeRaw = jest.fn().mockResolvedValue(9); // 9 < batch → single batch drains
     const result = await repo.cleanup(90, 60);
     expect(result).toEqual({ notifications: 9, tokens: 1 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  // --- Regression: P0-3 — retention never issues one unbounded delete. ---
+  it('cleanup repeats LIMIT batches until the expired window is empty', async () => {
+    const { repo, prisma } = build();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (prisma as any).$executeRaw = jest.fn()
+      .mockResolvedValueOnce(2) // full batch → keep going
+      .mockResolvedValueOnce(2) // full batch → keep going
+      .mockResolvedValueOnce(1); // partial → window drained
+    const result = await repo.cleanup(90, 60, 2);
+    expect(result.notifications).toBe(5);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((prisma as any).$executeRaw).toHaveBeenCalledTimes(3); // 3 bounded batches, no deleteMany
+    expect(prisma.notification.deleteMany).not.toHaveBeenCalled();
   });
 });
 
@@ -140,6 +158,43 @@ describe('channels', () => {
     tab1.close(); // connection cleanup
     expect(hub.activeConnections()).toBe(2);
     hub.onModuleDestroy();
+  });
+
+  // --- Regression: ML-1 — max-lifetime recycle for half-open sockets. ---
+  it('sse hub: recycles a connection past SSE_MAX_CONNECTION_AGE_MINUTES; healthy ones keep heartbeating', () => {
+    process.env.SSE_MAX_CONNECTION_AGE_MINUTES = '1';
+    try {
+      const hub = new SseHubService(new AdminNotificationMetrics());
+      const makeRes = () => {
+        const writes: string[] = [];
+        return {
+          writes,
+          setHeader: jest.fn(), flushHeaders: jest.fn(),
+          write: (s: string) => writes.push(s),
+          req: { on: jest.fn() },
+          end: jest.fn(),
+        };
+      };
+      const stale = makeRes();
+      const t0 = Date.now();
+      hub.register('a1', stale as never);
+
+      // 90s later (max age 60s): the stale connection is gracefully ended and dropped.
+      hub.heartbeatTick(t0 + 90_000);
+      expect(stale.end).toHaveBeenCalled();
+      expect(hub.activeConnections()).toBe(0); // Response not retained
+
+      // A fresh connection under the age cap is NOT disconnected — it gets a heartbeat.
+      const fresh = makeRes();
+      hub.register('a1', fresh as never);
+      hub.heartbeatTick(Date.now() + 30_000);
+      expect(fresh.end).not.toHaveBeenCalled();
+      expect(fresh.writes.some((w) => w.includes(': heartbeat'))).toBe(true);
+      expect(hub.activeConnections()).toBe(1);
+      hub.onModuleDestroy();
+    } finally {
+      delete process.env.SSE_MAX_CONNECTION_AGE_MINUTES;
+    }
   });
 
   it('push channel: invalid tokens purged, transient retried once, success/failed metrics', async () => {

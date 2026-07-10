@@ -1,3 +1,4 @@
+import { intOr } from '../../common/utils/number.util';
 export const LOG_CONFIG = 'LOG_CONFIG';
 
 export interface LogConfig {
@@ -11,11 +12,6 @@ export interface LogConfig {
   retentionIntervalMs: number;
   /** Delay before the first retention sweep. */
   retentionInitialDelayMs: number;
-}
-
-function intOr(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
 }
 
 export function loadLogConfig(env: NodeJS.ProcessEnv = process.env): LogConfig {

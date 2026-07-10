@@ -34,7 +34,7 @@ function row(over: Record<string, unknown> = {}) {
     attempts: 0,
     nextAttemptAt: new Date(0),
     lockedUntil: null,
-    lockedBy: null,
+    lockedBy: 'worker#claim-1',
     providerMessageId: null,
     lastError: null,
     sourceMessageId: 'evt-1',
@@ -56,7 +56,7 @@ function build(config = cfg(), rows: ReturnType<typeof row>[] = [row()]) {
     $executeRawUnsafe: jest.fn().mockResolvedValue(1),
     notificationOutbox: {
       findMany: jest.fn().mockResolvedValue(rows),
-      update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }), // fenced write-back (C1)
       count: jest.fn().mockResolvedValue(0),
       findFirst: jest.fn().mockResolvedValue(null),
     },
@@ -106,8 +106,8 @@ describe('NotificationSenderWorker', () => {
       expect(providerSend).toHaveBeenCalledWith(
         expect.objectContaining({ metadata: expect.objectContaining({ idempotencyKey: 'n1' }) }),
       );
-      expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
-        where: { id: 'n1' },
+      expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledWith({
+        where: { id: 'n1', lockedBy: 'worker#claim-1' },
         data: expect.objectContaining({ status: 'SENT', providerMessageId: 'pm-1', lockedUntil: null, lockedBy: null }),
       });
       expect(metrics.sent).toHaveBeenCalledTimes(1);
@@ -120,7 +120,7 @@ describe('NotificationSenderWorker', () => {
       const { worker, prisma, providerSend, metrics } = build();
       providerSend.mockRejectedValue(new TransientSendError('5xx'));
       await worker.sendRow(row({ attempts: 0 }) as any);
-      const data = prisma.notificationOutbox.update.mock.calls[0][0].data;
+      const data = prisma.notificationOutbox.updateMany.mock.calls[0][0].data;
       expect(data.attempts).toBe(1);
       expect(data.status).toBeUndefined();
       expect((data.nextAttemptAt as Date).getTime()).toBe(NOW + 500); // base 1000 * 2^0 * 0.5
@@ -131,7 +131,7 @@ describe('NotificationSenderWorker', () => {
       const { worker, prisma, providerSend } = build();
       providerSend.mockRejectedValue(new TransientSendError('rate limited', 7_000));
       await worker.sendRow(row({ attempts: 0 }) as any);
-      const data = prisma.notificationOutbox.update.mock.calls[0][0].data;
+      const data = prisma.notificationOutbox.updateMany.mock.calls[0][0].data;
       expect((data.nextAttemptAt as Date).getTime()).toBe(NOW + 7_000); // Retry-After, not the 500ms backoff
     });
 
@@ -139,8 +139,8 @@ describe('NotificationSenderWorker', () => {
       const { worker, prisma, providerSend, metrics } = build();
       providerSend.mockRejectedValue(new PermanentSendError('bad recipient'));
       await worker.sendRow(row() as any);
-      expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
-        where: { id: 'n1' },
+      expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledWith({
+        where: { id: 'n1', lockedBy: 'worker#claim-1' },
         data: expect.objectContaining({ status: 'FAILED' }),
       });
       expect(metrics.failedPermanent).toHaveBeenCalledTimes(1);
@@ -150,8 +150,8 @@ describe('NotificationSenderWorker', () => {
       const { worker, prisma, providerSend, metrics } = build(cfg({ maxAttempts: 8 }));
       providerSend.mockRejectedValue(new TransientSendError('down'));
       await worker.sendRow(row({ attempts: 7 }) as any);
-      expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({
-        where: { id: 'n1' },
+      expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledWith({
+        where: { id: 'n1', lockedBy: 'worker#claim-1' },
         data: expect.objectContaining({ status: 'FAILED', attempts: 8 }),
       });
       expect(metrics.failedExhausted).toHaveBeenCalledTimes(1);
@@ -163,7 +163,7 @@ describe('NotificationSenderWorker', () => {
         throw new PermanentSendError('no provider for channel');
       });
       await worker.sendRow(row({ channel: 'SMS' }) as any);
-      expect(prisma.notificationOutbox.update).toHaveBeenCalledWith({ where: { id: 'n1' }, data: expect.objectContaining({ status: 'FAILED' }) });
+      expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledWith({ where: { id: 'n1', lockedBy: 'worker#claim-1' }, data: expect.objectContaining({ status: 'FAILED' }) });
       expect(metrics.failedPermanent).toHaveBeenCalledTimes(1);
     });
   });
@@ -202,5 +202,24 @@ describe('NotificationSenderWorker', () => {
       const { worker } = build();
       await expect(worker.onModuleDestroy()).resolves.toBeUndefined();
     });
+  });
+});
+
+// --- Regression: C1 — fenced write-back. ---
+describe('lease fencing (C1)', () => {
+  it('a stale worker that lost its lease never overwrites the new owner (no throw, no retry metrics)', async () => {
+    const { worker, prisma, provider, metrics } = build();
+    prisma.notificationOutbox.findMany.mockResolvedValue([row()]);
+    provider.send.mockResolvedValue({ providerMessageId: 'pm-1' });
+    prisma.notificationOutbox.updateMany.mockResolvedValue({ count: 0 }); // lease reclaimed mid-send
+
+    await expect(worker.processBatch()).resolves.not.toThrow();
+
+    // write-back was ATTEMPTED with the fence and gave up on count 0
+    expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'n1', lockedBy: 'worker#claim-1' } }),
+    );
+    expect(prisma.notificationOutbox.updateMany).toHaveBeenCalledTimes(1); // no second overwrite attempt
+    expect(metrics.retried).not.toHaveBeenCalled();
   });
 });

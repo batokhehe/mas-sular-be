@@ -88,11 +88,11 @@ describe('InventoryReservationService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('commits reservations: deducts Product.stock and marks COMMITTED', async () => {
+  it('commits reservations: CAS-transitions RESERVED → COMMITTED, deducts Product.stock', async () => {
     const tx = buildTx({
       inventoryReservation: {
-        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', reservedQty: 2 }]),
-        update: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', reservedQty: 2, outletId: null }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       inventoryReservationHistory: { create: jest.fn() },
       product: { update: jest.fn().mockResolvedValue({}) },
@@ -100,17 +100,35 @@ describe('InventoryReservationService', () => {
     const { service } = svc();
     const n = await service.commitForOrder(tx as never, 'o1');
     expect(n).toBe(1);
+    expect(tx.inventoryReservation.updateMany).toHaveBeenCalledWith({
+      where: { id: 'res-1', status: ReservationStatus.RESERVED }, // C2: fenced transition
+      data: { status: ReservationStatus.COMMITTED, committedQty: 2 },
+    });
     expect(tx.product.update).toHaveBeenCalledWith({ where: { id: 'p1' }, data: { stock: { decrement: 2 } } });
-    expect(tx.inventoryReservation.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: ReservationStatus.COMMITTED, committedQty: 2 }) }),
-    );
+  });
+
+  // --- Regression: C2 — a reservation expired between snapshot and commit is skipped. ---
+  it('commit skips a reservation that lost the CAS (expired concurrently): no deduction, not counted', async () => {
+    const tx = buildTx({
+      inventoryReservation: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', reservedQty: 2, outletId: null }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }), // expiry worker won
+      },
+      inventoryReservationHistory: { create: jest.fn() },
+      product: { update: jest.fn() },
+    });
+    const { service } = svc();
+    const n = await service.commitForOrder(tx as never, 'o1');
+    expect(n).toBe(0);
+    expect(tx.product.update).not.toHaveBeenCalled(); // stock never touched
+    expect(tx.inventoryReservationHistory.create).not.toHaveBeenCalled();
   });
 
   it('releases committed reservations (restocks) and reports handled=true', async () => {
     const tx = buildTx({
       inventoryReservation: {
-        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', reservedQty: 2, committedQty: 2, status: ReservationStatus.COMMITTED }]),
-        update: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', outletId: null, reservedQty: 2, committedQty: 2, status: ReservationStatus.COMMITTED }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       inventoryReservationHistory: { create: jest.fn() },
       product: { update: jest.fn().mockResolvedValue({}) },
@@ -118,7 +136,26 @@ describe('InventoryReservationService', () => {
     const { service } = svc();
     const result = await service.releaseForOrder(tx as never, 'o1', ReservationStatus.RELEASED);
     expect(result.handled).toBe(true);
+    expect(tx.inventoryReservation.updateMany).toHaveBeenCalledWith({
+      where: { id: 'res-1', status: ReservationStatus.COMMITTED }, // CAS on the observed status
+      data: { status: ReservationStatus.RELEASED, releasedQty: 2 },
+    });
     expect(tx.product.update).toHaveBeenCalledWith({ where: { id: 'p1' }, data: { stock: { increment: 2 } } });
+  });
+
+  it('release skips a reservation whose state changed after the snapshot (no double counter move)', async () => {
+    const tx = buildTx({
+      inventoryReservation: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'res-1', productId: 'p1', outletId: null, reservedQty: 2, committedQty: 0, status: ReservationStatus.RESERVED }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }), // expired concurrently
+      },
+      inventoryReservationHistory: { create: jest.fn() },
+      product: { update: jest.fn() },
+    });
+    const { service } = svc();
+    await service.releaseForOrder(tx as never, 'o1', ReservationStatus.RELEASED);
+    expect(tx.product.update).not.toHaveBeenCalled();
+    expect(tx.inventoryReservationHistory.create).not.toHaveBeenCalled();
   });
 
   it('release reports handled=false when there are no reservations (legacy order)', async () => {
@@ -147,9 +184,11 @@ describe('InventoryReservationService', () => {
         update: jest.fn().mockResolvedValue({}),
       },
       productInventory: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'pi-1', stock: 10, reserved: 3 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'pi-1' }),
         update: jest.fn().mockResolvedValue({}),
       },
+      // C5: the row is re-read FOR UPDATE; available is computed from the locked values.
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'pi-1', stock: 10, reserved: 3 }]),
       inventoryReservationHistory: { create: jest.fn() },
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -7,16 +7,13 @@ import { pageArgs, paginate } from '../../common/pagination/pagination';
 import { TemplateRenderer } from '../notifications/template-renderer';
 import { RedriveService } from './redrive.service';
 import { extractRelated } from './queue-center.util';
+import { num } from '../../common/utils/number.util';
 
 const CACHE_KEY = 'admin:notification-center';
 const CACHE_TTL_MS = 30_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function num(v: unknown): number {
-  if (typeof v === 'bigint') return Number(v);
-  if (v === null || v === undefined) return 0;
-  return Number(v);
-}
+
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : v ? new Date(v as string).toISOString() : null);
 
 export interface ListNotificationCenterQuery {

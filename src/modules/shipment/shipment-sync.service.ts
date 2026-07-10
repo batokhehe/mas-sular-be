@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { NotificationChannel, Prisma, ShipmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { orderStatusSourcesFor } from '../orders/domain/order-status-transitions';
 import { ShipmentProviderFactory } from './shipment-provider.factory';
 import { ShipmentStatusMapper } from './shipment-status.mapper';
 
@@ -115,15 +116,20 @@ export class ShipmentSyncService {
         },
       });
 
-      // Advance the order only when the mapping yields a status and it differs.
+      // Advance the order only via a legal transition (audit F4): CAS over the
+      // allowed source statuses so a CANCELLED/COMPLETED order is never revived by
+      // a late courier update. A lost CAS just skips the advance (shipment status
+      // and history above are still recorded).
       if (orderStatus && orderStatus !== shipment.order.status) {
-        await tx.order.update({
-          where: { id: shipment.order.id },
-          data: {
-            status: orderStatus,
-            events: { create: { status: orderStatus, note: `Shipment ${mapped} (${shipment.provider})` } },
-          },
+        const flip = await tx.order.updateMany({
+          where: { id: shipment.order.id, status: { in: orderStatusSourcesFor(orderStatus) } },
+          data: { status: orderStatus },
         });
+        if (flip.count === 1) {
+          await tx.orderEvent.create({
+            data: { orderId: shipment.order.id, status: orderStatus, note: `Shipment ${mapped} (${shipment.provider})` },
+          });
+        }
       }
 
       // Notify exactly once per transition (only for the notifiable statuses).

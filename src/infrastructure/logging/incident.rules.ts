@@ -1,4 +1,5 @@
 import { IncidentSeverity } from '@prisma/client';
+import { intOr } from '../../common/utils/number.util';
 
 /**
  * PURE incident detection rules. The service gathers `IncidentSignals` from
@@ -13,11 +14,6 @@ export interface IncidentThresholds {
   notificationFailures: number;
   checkoutP95Ms: number;
   dbLatencyMs: number; // avg per query name
-}
-
-function intOr(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
 }
 
 export function loadIncidentThresholds(env: NodeJS.ProcessEnv = process.env): IncidentThresholds {

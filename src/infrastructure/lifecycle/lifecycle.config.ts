@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const LIFECYCLE_CONFIG = 'LIFECYCLE_CONFIG';
 
 export interface LifecycleConfig {
@@ -21,11 +22,6 @@ export interface LifecycleConfig {
   notificationSentDays: number; // NotificationOutbox status=SENT (by sentAt)
   notificationFailedDays: number; // NotificationOutbox status=FAILED (retained long)
   uploadTokenExpiredDays: number; // PaymentUploadToken, retained N days AFTER expiresAt
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadLifecycleConfig(env: NodeJS.ProcessEnv = process.env): LifecycleConfig {

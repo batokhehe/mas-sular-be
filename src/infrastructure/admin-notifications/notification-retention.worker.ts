@@ -1,11 +1,7 @@
 import { Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { LogService } from '../logging/log.service';
 import { AdminNotificationRepository } from './admin-notification.repository';
-
-function intOr(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
-}
+import { intOr } from '../../common/utils/number.util';
 
 /**
  * Daily retention sweep: prunes old notifications (NOTIFICATION_RETENTION_DAYS,
@@ -23,6 +19,8 @@ export class NotificationRetentionWorker implements OnApplicationBootstrap, OnMo
   private readonly retentionDays = intOr(process.env.NOTIFICATION_RETENTION_DAYS, 90);
   private readonly tokenStaleDays = intOr(process.env.PUSH_TOKEN_STALE_DAYS, 60);
   private readonly intervalMs = intOr(process.env.NOTIFICATION_RETENTION_INTERVAL_MS, 24 * 60 * 60 * 1000);
+  // P0-3: LIMIT per delete batch (same default as the SystemLog/Outbox retention).
+  private readonly batchSize = intOr(process.env.NOTIFICATION_RETENTION_BATCH_SIZE, 1000);
 
   constructor(
     private readonly repository: AdminNotificationRepository,
@@ -53,7 +51,7 @@ export class NotificationRetentionWorker implements OnApplicationBootstrap, OnMo
     this.running = true;
     const startedAt = Date.now();
     try {
-      const result = await this.repository.cleanup(this.retentionDays, this.tokenStaleDays);
+      const result = await this.repository.cleanup(this.retentionDays, this.tokenStaleDays, this.batchSize);
       this.logs?.write({
         level: 'INFO', module: 'worker.notification-retention', action: 'tick',
         message: `notification retention: notifications=${result.notifications} tokens=${result.tokens}`,

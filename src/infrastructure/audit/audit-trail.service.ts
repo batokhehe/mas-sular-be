@@ -4,6 +4,7 @@ import type { Response } from 'express';
 import { PrismaService } from '../../database/prisma.service';
 import { pageArgs, paginate } from '../../common/pagination/pagination';
 import { computeDiff, deriveEntityName, sanitizeSnapshot } from './audit-diff.util';
+import { numOrZero as num } from '../../common/utils/number.util';
 
 const EXPORT_BATCH = 1000;
 const EXPORT_MAX_ROWS = 50_000;
@@ -36,11 +37,6 @@ export interface ListAuditQuery {
   search?: string;
   dateFrom?: Date;
   dateTo?: Date;
-}
-
-function num(v: unknown): number {
-  if (typeof v === 'bigint') return Number(v);
-  return Number(v ?? 0) || 0;
 }
 
 /**
@@ -181,6 +177,17 @@ export class AuditTrailService {
 
   async exportCsv(query: ListAuditQuery, res: Response): Promise<void> {
     const where = this.buildWhere(query);
+
+    // ML-2: a cancelled download must stop the export immediately — no further
+    // batch reads, row generation, or writes into a dead socket. `close` fires on
+    // client abort before `destroyed` is observable in all Express versions, so
+    // track both. Never throws: an aborted export just returns.
+    let aborted = false;
+    res.req?.on('close', () => {
+      aborted = true;
+    });
+    const clientGone = (): boolean => aborted || res.destroyed || res.writableEnded;
+
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="audit-trail-${new Date().toISOString().slice(0, 10)}.csv"`);
     res.write('id,createdAt,admin,module,entity,entityId,entityName,action,success,changedFields,requestId,ip\n');
@@ -193,6 +200,7 @@ export class AuditTrailService {
     let cursor: string | undefined;
     let exported = 0;
     while (exported < EXPORT_MAX_ROWS) {
+      if (clientGone()) return; // stop BEFORE the next database read
       const rows = await this.prisma.auditTrail.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -201,17 +209,22 @@ export class AuditTrailService {
       });
       if (rows.length === 0) break;
       for (const r of rows) {
+        if (clientGone()) return; // stop generating/writing mid-batch too
         const changed = Array.isArray(r.diff) ? (r.diff as unknown[]).length : 0;
-        res.write(
-          [r.id, r.createdAt.toISOString(), r.adminName ?? r.adminId ?? 'system', r.module, r.entity, r.entityId ?? '', r.entityName ?? '', r.action, r.success ? 'success' : 'failed', changed, r.requestId ?? '', r.ipAddress ?? '']
-            .map(esc)
-            .join(',') + '\n',
-        );
+        try {
+          res.write(
+            [r.id, r.createdAt.toISOString(), r.adminName ?? r.adminId ?? 'system', r.module, r.entity, r.entityId ?? '', r.entityName ?? '', r.action, r.success ? 'success' : 'failed', changed, r.requestId ?? '', r.ipAddress ?? '']
+              .map(esc)
+              .join(',') + '\n',
+          );
+        } catch {
+          return; // socket died mid-write — give up gracefully
+        }
       }
       exported += rows.length;
       cursor = rows[rows.length - 1].id;
       if (rows.length < EXPORT_BATCH) break;
     }
-    res.end();
+    if (!clientGone()) res.end();
   }
 }

@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const OUTBOX_CONFIG = 'OUTBOX_CONFIG';
 
 export interface OutboxRelayConfig {
@@ -17,11 +18,6 @@ export interface OutboxRelayConfig {
   backoffCapMs: number;
   /** Throttle for relay health logging (pending/failed/oldest age). */
   healthLogIntervalMs: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadOutboxConfig(env: NodeJS.ProcessEnv = process.env): OutboxRelayConfig {

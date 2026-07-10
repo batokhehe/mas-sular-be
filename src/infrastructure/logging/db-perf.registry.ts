@@ -63,11 +63,6 @@ export class DbPerfRegistry {
     }
     return { since: this.windowStartedAt.toISOString(), totalQueries, slowCount, queries };
   }
-
-  reset(): void {
-    this.byName.clear();
-    this.windowStartedAt = new Date();
-  }
 }
 
 /** Process-wide singleton (PrismaService writes; the profiler reads). */

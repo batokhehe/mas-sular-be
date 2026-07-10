@@ -6,6 +6,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { pageArgs, paginate } from '../../common/pagination/pagination';
 import { dbPerfRegistry } from './db-perf.registry';
 import { percentile } from './performance-profiler.util';
+import { num } from '../../common/utils/number.util';
 import {
   evaluateRules,
   IncidentCandidate,
@@ -18,12 +19,6 @@ const SWEEP_GATE_KEY = 'admin:incidents:last-sweep';
 const SWEEP_TTL_MS = 30_000;
 const HOUR_MS = 60 * 60 * 1000;
 const ACTIVE: IncidentStatus[] = [IncidentStatus.OPEN, IncidentStatus.ACKNOWLEDGED];
-
-function num(v: unknown): number {
-  if (typeof v === 'bigint') return Number(v);
-  if (v === null || v === undefined) return 0;
-  return Number(v);
-}
 
 export interface ListIncidentsQuery {
   page?: number;

@@ -1,6 +1,5 @@
 import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { OrderStatus, PaymentStatus, Prisma, ShipmentStatus } from '@prisma/client';
-import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { ShipmentService } from '../shipment/shipment.service';
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
@@ -28,6 +27,7 @@ import { UpdateRoleDto } from './application/dto/update-role.dto';
 import { UpdateUserDto } from './application/dto/update-user.dto';
 import { pageArgs, paginate } from '../../common/pagination/pagination';
 import { buildOrderTimeline, computeAvailableActions } from './order-operations.util';
+import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
 
 // Payment terminal states: once a payment reaches any of these it is final and
 // no further transition is allowed. PENDING and WAITING_VERIFICATION are the
@@ -386,18 +386,15 @@ export class AdminService {
         const { cancelled } = await this.cancellation.cancelAndRestock(tx, id, dto.note ?? `Order marked as ${OrderStatus.CANCELLED}`);
         if (cancelled) {
           await tx.outboxEvent.create({
-            data: {
-              id: randomUUID(),
+            data: buildOutboxEvent({
               aggregateType: 'order',
               aggregateId: id,
               eventName: 'order.status_updated',
-              eventVersion: 1,
               exchange: 'orders',
               routingKey: 'order.status_updated',
               payload: { orderId: id, status: OrderStatus.CANCELLED },
               metadata: { source: 'admin.updateOrderStatus' },
-              occurredAt: new Date(),
-            },
+            }),
           });
         }
         return tx.order.findUnique({ where: { id }, include: { payment: true, shipment: true } });
@@ -424,18 +421,15 @@ export class AdminService {
         include: { payment: true, shipment: true },
       });
       await tx.outboxEvent.create({
-        data: {
-          id: randomUUID(),
+        data: buildOutboxEvent({
           aggregateType: 'order',
           aggregateId: order.id,
           eventName: 'order.status_updated',
-          eventVersion: 1,
           exchange: 'orders',
           routingKey: 'order.status_updated',
           payload: { orderId: order.id, status: order.status },
           metadata: { source: 'admin.updateOrderStatus' },
-          occurredAt: new Date(),
-        },
+        }),
       });
       return order;
     }, { timeout: 10000 });
@@ -503,13 +497,30 @@ export class AdminService {
         throw new ConflictException('Payment already verified or rejected');
       }
       const updated = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
-      await tx.order.update({
-        where: { id: payment.orderId },
-        data: {
-          status: OrderStatus.PROCESSING,
-          events: { create: { status: OrderStatus.PROCESSING, note: dto.note ?? 'Payment verified by admin' } },
-        },
+
+      // Legal-transition guard (audit F4): a CANCELLED order must never be revived
+      // by a payment verification — its stock was already restocked. FOR UPDATE
+      // (same style as reserveForOrder) reads the CURRENT status and blocks a
+      // concurrent cancel until this tx commits; on conflict everything (incl. the
+      // payment flip above) rolls back and the admin gets a 409.
+      const rows = await tx.$queryRaw<Array<{ status: string }>>(
+        Prisma.sql`SELECT status FROM \`Order\` WHERE id = ${payment.orderId} FOR UPDATE`,
+      );
+      const orderStatus = rows[0]?.status;
+      if (!orderStatus || orderStatus === OrderStatus.CANCELLED) {
+        throw new ConflictException('Order is cancelled; the payment can no longer be verified');
+      }
+      // Move PENDING → PROCESSING; an order an admin already advanced past
+      // PROCESSING keeps its (further) status — never a backwards transition.
+      const orderFlip = await tx.order.updateMany({
+        where: { id: payment.orderId, status: OrderStatus.PENDING },
+        data: { status: OrderStatus.PROCESSING },
       });
+      if (orderFlip.count === 1) {
+        await tx.orderEvent.create({
+          data: { orderId: payment.orderId, status: OrderStatus.PROCESSING, note: dto.note ?? 'Payment verified by admin' },
+        });
+      }
 
       // Commit reservations: deduct Product.stock, mark COMMITTED — atomic with PAID.
       let committed = 0;
@@ -535,12 +546,10 @@ export class AdminService {
         },
       });
       await tx.outboxEvent.create({
-        data: {
-          id: randomUUID(),
+        data: buildOutboxEvent({
           aggregateType: 'payment',
           aggregateId: updated.id,
           eventName: 'payment.paid',
-          eventVersion: 1,
           exchange: 'payments',
           routingKey: 'payment.paid',
           payload: {
@@ -554,7 +563,7 @@ export class AdminService {
           },
           metadata: { source: 'admin.verifyPayment' },
           occurredAt: verifiedAt,
-        },
+        }),
       });
       return updated;
     }, { timeout: 10000 });
@@ -600,18 +609,15 @@ export class AdminService {
       await this.cancellation.cancelAndRestock(tx, payment.orderId, dto.note ?? 'Payment rejected by admin');
 
       await tx.outboxEvent.create({
-        data: {
-          id: randomUUID(),
+        data: buildOutboxEvent({
           aggregateType: 'payment',
           aggregateId: payment.id,
           eventName: 'payment.failed',
-          eventVersion: 1,
           exchange: 'payments',
           routingKey: 'payment.failed',
           payload: { paymentId: payment.id, orderId: payment.orderId },
           metadata: { source: 'admin.rejectPayment' },
-          occurredAt: new Date(),
-        },
+        }),
       });
 
       return tx.payment.findUnique({ where: { id: paymentId } });

@@ -1,3 +1,4 @@
+import { finiteInt as intOr } from '../../common/utils/number.util';
 export const PAYMENT_UNIQUE_CODE_CONFIG = 'PAYMENT_UNIQUE_CODE_CONFIG';
 
 export interface PaymentUniqueCodeConfig {
@@ -13,11 +14,6 @@ export interface PaymentUniqueCodeConfig {
 
 /** The absolute ceiling for a 3-digit code (spec: max <= 999). */
 const CODE_CEILING = 999;
-
-function intOr(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
-}
 
 /**
  * Load + validate the unique-code config. Range invariants (min >= 0, max <= 999,

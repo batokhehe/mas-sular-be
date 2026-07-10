@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const NOTIFICATION_SENDER_CONFIG = 'NOTIFICATION_SENDER_CONFIG';
 
 export interface NotificationSenderConfig {
@@ -28,11 +29,6 @@ export interface NotificationSenderConfig {
   emailFrom?: string;
   /** Provider HTTP request timeout; must be < leaseMs so a hung call can't outlive the lease. */
   emailRequestTimeoutMs: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadNotificationSenderConfig(env: NodeJS.ProcessEnv = process.env): NotificationSenderConfig {

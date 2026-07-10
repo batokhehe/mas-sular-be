@@ -1,6 +1,5 @@
 import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { CoverageType, OrderStatus, PaymentMethod, PaymentStatus, Prisma, Product, Promo, Topping, VoucherType } from '@prisma/client';
-import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { IdempotencyService, SupersededError } from '../../infrastructure/idempotency/idempotency.service';
 import { PaymentUploadTokenService } from '../payments/payment-upload-token.service';
@@ -19,6 +18,7 @@ import {
   ValidateVoucherDto,
 } from './application/dto/create-order.dto';
 import { generateOrderNumber, isOrderNumberConflict } from './order-number.util';
+import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
 
 type NormalizedCheckoutItem = {
   productId: string;
@@ -585,14 +585,18 @@ export class OrdersService {
     // sends). Only BANK_TRANSFER gets a code; when it is null (QRIS/COD/legacy/disabled)
     // transferTotal == businessTotal, so Payment.amount == Order.totalPrice.
     const businessTotal = summary.grand_total;
-    let uniqueCode: number | null = null;
-    let transferTotal = businessTotal;
-    if (paymentMethod === PaymentMethod.BANK_TRANSFER && this.uniqueCode?.isEnabled()) {
-      uniqueCode = await this.uniqueCode.allocate(businessTotal);
-      if (uniqueCode !== null) transferTotal = businessTotal + uniqueCode;
-    }
 
     const order = await this.prisma.$transaction(async (tx) => {
+      // C4: unique-code allocation runs INSIDE the checkout transaction, so the
+      // collision re-check against PENDING transfers happens immediately before
+      // the payment row is created (a pre-tx probe could race a concurrent
+      // checkout committing the same transfer total between check and create).
+      let uniqueCode: number | null = null;
+      let transferTotal = businessTotal;
+      if (paymentMethod === PaymentMethod.BANK_TRANSFER && this.uniqueCode?.isEnabled()) {
+        uniqueCode = await this.uniqueCode.allocateInTx(tx, businessTotal);
+        if (uniqueCode !== null) transferTotal = businessTotal + uniqueCode;
+      }
       // Legacy path (no inventory service wired): decrement Product.stock now.
       // Reservation path (inventory present): stock is RESERVED after order.create
       // below and only deducted at payment verification.
@@ -745,12 +749,10 @@ export class OrdersService {
       // the order. It is the last statement so a superseded finalize (above) rolls
       // back the order AND this event together — no event for an uncommitted order.
       await tx.outboxEvent.create({
-        data: {
-          id: randomUUID(),
+        data: buildOutboxEvent({
           aggregateType: 'order',
           aggregateId: createdOrder.id,
           eventName: 'order.created',
-          eventVersion: 1,
           exchange: 'orders',
           routingKey: 'order.created',
           payload: {
@@ -763,8 +765,7 @@ export class OrdersService {
             ...(uploadUrl ? { uploadUrl } : {}),
           },
           metadata: { source: 'orders.checkout' },
-          occurredAt: new Date(),
-        },
+        }),
       });
 
       return createdOrder;

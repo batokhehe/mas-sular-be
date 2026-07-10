@@ -649,6 +649,12 @@ model Shipment {
   history            ShipmentHistory[]
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
+
+  // P0-1: every worker predicate is status-first (tracking poll, sync sweep,
+  // reconciliation candidates, booking-claim CAS with its updatedAt lease check).
+  // trackingNumber deliberately has NO index: it only ever appears as a
+  // null/not-null residual filter, never as a value lookup.
+  @@index([status, updatedAt])
 }
 
 /// Append-only audit of every shipment status transition (provider → internal).

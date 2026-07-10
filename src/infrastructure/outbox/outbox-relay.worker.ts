@@ -1,9 +1,10 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import type { OutboxEvent } from '@prisma/client';
+import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import type { OutboxEvent, Prisma } from '@prisma/client';
 import * as amqp from 'amqplib';
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
 import { PrismaService } from '../../database/prisma.service';
+import { LogService } from '../logging/log.service';
 import { RelayMetrics } from '../metrics/relay.metrics';
 import { OUTBOX_CONFIG, OutboxRelayConfig } from './outbox.config';
 import { RabbitConnectionManager } from './rabbit-connection.manager';
@@ -37,7 +38,31 @@ export class OutboxRelayWorker implements OnApplicationBootstrap, OnModuleDestro
     private readonly rabbit: RabbitConnectionManager,
     private readonly metrics: RelayMetrics,
     @Inject(OUTBOX_CONFIG) private readonly config: OutboxRelayConfig,
+    @Optional() private readonly logs?: LogService,
   ) {}
+
+  /**
+   * Fenced write-back (C1): only the relay that still owns the row's lease
+   * (`lockedBy` unchanged since the claim) may persist an outcome. A stale relay
+   * gets count 0 → logs `lease_lost`, never throws, never overwrites the new
+   * owner's state (a duplicate publish is already deduped by consumers).
+   */
+  private async fencedWriteBack(row: OutboxEvent, data: Prisma.OutboxEventUpdateManyMutationInput, intent: string): Promise<boolean> {
+    const { count } = await this.prisma.outboxEvent.updateMany({
+      where: { id: row.id, lockedBy: row.lockedBy },
+      data,
+    });
+    if (count === 1) return true;
+    this.logger.warn(`OutboxEvent ${row.id}: lease lost before ${intent} — leaving the new owner's state untouched`);
+    this.logs?.write({
+      level: 'WARN',
+      module: 'worker.outbox-relay',
+      action: 'lease_lost',
+      message: `lease lost before ${intent} (row ${row.id})`,
+      metadata: { outboxEventId: row.id, intent, lockedBy: row.lockedBy },
+    });
+    return false;
+  }
 
   onApplicationBootstrap(): void {
     if (!this.config.enabled) {
@@ -152,7 +177,7 @@ export class OutboxRelayWorker implements OnApplicationBootstrap, OnModuleDestro
         headers: this.buildHeaders(row),
       };
       await this.rabbit.publishWithConfirm(row.exchange, row.routingKey, body, options);
-      await this.markPublished(row.id);
+      await this.markPublished(row);
       this.metrics.publishedOk((this.nowMs() - start) / 1000);
     } catch (err) {
       await this.scheduleRetry(row, err);
@@ -167,11 +192,12 @@ export class OutboxRelayWorker implements OnApplicationBootstrap, OnModuleDestro
     return headers;
   }
 
-  private async markPublished(id: string): Promise<void> {
-    await this.prisma.outboxEvent.update({
-      where: { id },
-      data: { status: 'PUBLISHED', publishedAt: new Date(this.nowMs()), lockedUntil: null, lockedBy: null, lastError: null },
-    });
+  private async markPublished(row: OutboxEvent): Promise<void> {
+    await this.fencedWriteBack(
+      row,
+      { status: 'PUBLISHED', publishedAt: new Date(this.nowMs()), lockedUntil: null, lockedBy: null, lastError: null },
+      'markPublished',
+    );
   }
 
   private async scheduleRetry(row: OutboxEvent, err: unknown): Promise<void> {
@@ -179,23 +205,29 @@ export class OutboxRelayWorker implements OnApplicationBootstrap, OnModuleDestro
     const attempts = row.attempts + 1;
 
     if (attempts >= row.maxAttempts) {
-      await this.prisma.outboxEvent.update({
-        where: { id: row.id },
-        data: { status: 'FAILED', attempts, lastError: message, lockedUntil: null, lockedBy: null },
-      });
-      this.metrics.failedTerminal();
-      this.logger.error(`OutboxEvent ${row.id} (${row.eventName}) FAILED after ${attempts} attempts: ${message}`);
+      const owned = await this.fencedWriteBack(
+        row,
+        { status: 'FAILED', attempts, lastError: message, lockedUntil: null, lockedBy: null },
+        'markFailed',
+      );
+      if (owned) {
+        this.metrics.failedTerminal();
+        this.logger.error(`OutboxEvent ${row.id} (${row.eventName}) FAILED after ${attempts} attempts: ${message}`);
+      }
       return;
     }
 
     const delay = this.backoffDelayMs(attempts);
     const nextAttemptAt = new Date(this.nowMs() + delay);
-    await this.prisma.outboxEvent.update({
-      where: { id: row.id },
-      data: { attempts, nextAttemptAt, lastError: message, lockedUntil: null, lockedBy: null },
-    });
-    this.metrics.retried();
-    this.logger.warn(`OutboxEvent ${row.id} publish failed (attempt ${attempts}); retry in ${delay}ms: ${message}`);
+    const owned = await this.fencedWriteBack(
+      row,
+      { attempts, nextAttemptAt, lastError: message, lockedUntil: null, lockedBy: null },
+      'scheduleRetry',
+    );
+    if (owned) {
+      this.metrics.retried();
+      this.logger.warn(`OutboxEvent ${row.id} publish failed (attempt ${attempts}); retry in ${delay}ms: ${message}`);
+    }
   }
 
   /** Full-jitter exponential backoff in [0, cap). */

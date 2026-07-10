@@ -3,6 +3,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { num } from '../../common/utils/number.util';
 
 export type HealthColor = 'green' | 'yellow' | 'red' | 'gray';
 
@@ -12,11 +13,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // A worker is "recent" (running) if it logged within this window.
 const WORKER_STALE_MS = 15 * 60 * 1000;
 
-function num(v: unknown): number {
-  if (typeof v === 'bigint') return Number(v);
-  if (v === null || v === undefined) return 0;
-  return Number(v);
-}
+
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : v ? new Date(v as string).toISOString() : null);
 
 // Worker registry — name + env flag + SystemLog module (or table-derived source).

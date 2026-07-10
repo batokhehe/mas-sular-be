@@ -3,6 +3,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { OrderStatus, PaymentMethod, PaymentStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { num } from '../../common/utils/number.util';
 
 export type HealthLevel = 'green' | 'yellow' | 'red';
 
@@ -11,12 +12,6 @@ const CACHE_KEY = 'admin:executive-dashboard';
 const CACHE_TTL_MS = 30_000;
 
 /** Coerce Prisma raw aggregates (bigint | number | string | null) to a number. */
-function num(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value);
-  if (value === null || value === undefined) return 0;
-  return Number(value);
-}
-
 function toDayKey(value: unknown): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value).slice(0, 10);

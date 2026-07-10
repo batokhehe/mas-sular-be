@@ -124,12 +124,34 @@ export class AdminNotificationRepository {
 
   // ---------------- retention ----------------
 
-  async cleanup(notificationRetentionDays: number, tokenStaleDays: number) {
+  /**
+   * P0-3: notifications are deleted in oldest-first LIMIT batches (same strategy
+   * as the SystemLog/Outbox retention worker) — never one unbounded deleteMany.
+   * Fan-out means rows = events × admins; the first sweep on a long-lived install
+   * could otherwise delete millions of rows in a single locking statement.
+   * Push tokens stay a plain deleteMany: bounded by admins × devices (tiny).
+   */
+  async cleanup(notificationRetentionDays: number, tokenStaleDays: number, batchSize = 1000) {
     const now = Date.now();
-    const [notifications, tokens] = await Promise.all([
-      this.prisma.notification.deleteMany({ where: { createdAt: { lt: new Date(now - notificationRetentionDays * 86_400_000) } } }),
-      this.prisma.pushSubscription.deleteMany({ where: { lastSeenAt: { lt: new Date(now - tokenStaleDays * 86_400_000) } } }),
-    ]);
-    return { notifications: notifications.count, tokens: tokens.count };
+    const cutoff = new Date(now - notificationRetentionDays * 86_400_000);
+    // Validated integer from our own config → injection-safe to inline in LIMIT;
+    // the cutoff is parameterized (mirrors retention.worker.deleteBatch).
+    const limit = Math.max(1, Math.trunc(batchSize));
+
+    let notifications = 0;
+    for (;;) {
+      const affected = Number(
+        await this.prisma.$executeRaw(
+          Prisma.sql`DELETE FROM \`Notification\` WHERE \`createdAt\` < ${cutoff} ORDER BY \`createdAt\` ASC LIMIT ${Prisma.raw(String(limit))}`,
+        ),
+      );
+      notifications += affected;
+      if (affected < limit) break; // window drained
+    }
+
+    const tokens = await this.prisma.pushSubscription.deleteMany({
+      where: { lastSeenAt: { lt: new Date(now - tokenStaleDays * 86_400_000) } },
+    });
+    return { notifications, tokens: tokens.count };
   }
 }

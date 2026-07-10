@@ -26,7 +26,9 @@ const OUTLET = { id: 'out1', name: 'Pusat', postalCode: '40111', latitude: -6.9,
 function buildTx() {
   return {
     shipment: { update: jest.fn().mockResolvedValue({}) },
-    order: { update: jest.fn().mockResolvedValue({}) },
+    // Order advance is a legal-transition CAS (F4) + explicit event row.
+    order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    orderEvent: { create: jest.fn().mockResolvedValue({}) },
     notificationOutbox: { create: jest.fn().mockResolvedValue({}) },
   };
 }
@@ -35,7 +37,10 @@ function buildPrisma(order: unknown = ORDER, tx = buildTx()) {
   return {
     order: { findUnique: jest.fn().mockResolvedValue(order) },
     outlet: { findFirst: jest.fn().mockResolvedValue(OUTLET) },
-    shipment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    shipment: {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }), // booking claim (F3)
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     $transaction: jest.fn().mockImplementation((cb: (t: unknown) => Promise<unknown>) => cb(tx)),
     __tx: tx,
   };
@@ -70,12 +75,69 @@ describe('ShipmentService', () => {
         data: expect.objectContaining({ trackingNumber: 'JNE123', providerShipmentId: 'JNE123', status: ShipmentStatus.CREATED }),
       }),
     );
-    // order → SHIPPED
-    expect(prisma.__tx.order.update.mock.calls[0][0].data.status).toBe('SHIPPED');
+    // booking claim taken BEFORE the provider call (F3)
+    expect(prisma.shipment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: ShipmentStatus.PENDING } }),
+    );
+    // order → SHIPPED via legal-transition CAS (F4) + event row
+    const flip = prisma.__tx.order.updateMany.mock.calls[0][0];
+    expect(flip.data.status).toBe('SHIPPED');
+    expect(flip.where.status.in).not.toContain('CANCELLED'); // never resurrects a cancelled order
+    expect(prisma.__tx.orderEvent.create).toHaveBeenCalled();
     // WhatsApp enqueued with tracking
     const notif = prisma.__tx.notificationOutbox.create.mock.calls[0][0].data;
     expect(notif.template).toBe('order.shipped');
     expect(notif.payload.trackingNumber).toBe('JNE123');
+  });
+
+  it('F3: a lost booking claim never reaches the courier (concurrent booking in flight)', async () => {
+    const prisma = buildPrisma();
+    prisma.shipment.updateMany.mockResolvedValue({ count: 0 }); // claim lost
+    prisma.shipment.findUnique.mockResolvedValue({ id: 'sh1', status: ShipmentStatus.PENDING, trackingNumber: null });
+    const provider = { name: 'jne', createShipment: jest.fn() };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new ShipmentService(prisma as any, buildFactory(provider) as any);
+
+    const outcome = await service.createForOrder('o1');
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain('already in progress');
+    expect(provider.createShipment).not.toHaveBeenCalled(); // no duplicate courier booking
+  });
+
+  it('F3: a lost claim whose winner already booked returns that tracking (idempotent success)', async () => {
+    const prisma = buildPrisma();
+    prisma.shipment.updateMany.mockResolvedValue({ count: 0 });
+    prisma.shipment.findUnique.mockResolvedValue({ id: 'sh1', status: ShipmentStatus.CREATED, trackingNumber: 'WINNER-1' });
+    const provider = { name: 'jne', createShipment: jest.fn() };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new ShipmentService(prisma as any, buildFactory(provider) as any);
+
+    const outcome = await service.createForOrder('o1');
+
+    expect(outcome).toMatchObject({ ok: true, trackingNumber: 'WINNER-1' });
+    expect(provider.createShipment).not.toHaveBeenCalled();
+  });
+
+  it('F4: an order cancelled mid-booking keeps CANCELLED — tracking recorded, no SHIPPED event, no WhatsApp', async () => {
+    const tx = buildTx();
+    tx.order.updateMany.mockResolvedValue({ count: 0 }); // CAS lost: order no longer shippable
+    const prisma = buildPrisma(ORDER, tx);
+    const provider = {
+      name: 'jne',
+      createShipment: jest.fn().mockResolvedValue({
+        trackingNumber: 'JNE123', providerShipmentId: 'JNE123', status: ShipmentStatus.CREATED, rawPayload: {},
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new ShipmentService(prisma as any, buildFactory(provider) as any);
+
+    const outcome = await service.createForOrder('o1');
+
+    expect(outcome.ok).toBe(true); // courier booking itself succeeded and is snapshotted
+    expect(tx.shipment.update).toHaveBeenCalled(); // tracking kept for ops
+    expect(tx.orderEvent.create).not.toHaveBeenCalled();
+    expect(tx.notificationOutbox.create).not.toHaveBeenCalled(); // customer NOT told it shipped
   });
 
   it('is idempotent when a tracking number already exists (no provider call)', async () => {

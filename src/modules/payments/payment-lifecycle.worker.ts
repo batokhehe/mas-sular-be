@@ -1,12 +1,12 @@
 import { Inject, Injectable, Logger, Optional, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Payment, PaymentMethod, PaymentStatus, ReservationStatus } from '@prisma/client';
-import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { LogService } from '../../infrastructure/logging/log.service';
 import { OrderCancellationService } from '../orders/order-cancellation.service';
 import { PAYMENT_LIFECYCLE_CONFIG, PaymentLifecycleConfig } from './payment-lifecycle.config';
 import { PaymentLifecycleMetrics } from './payment-lifecycle.metrics';
 import { PaymentUploadTokenService } from './payment-upload-token.service';
+import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
 
 // A payment is reminder/expiry-eligible only while still awaiting payment/verification.
 const ELIGIBLE_STATUSES: PaymentStatus[] = [PaymentStatus.PENDING, PaymentStatus.WAITING_VERIFICATION];
@@ -155,18 +155,16 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
         );
 
         await tx.outboxEvent.create({
-          data: {
-            id: randomUUID(),
+          data: buildOutboxEvent({
             aggregateType: 'payment',
             aggregateId: payment.id,
             eventName: 'payment.expired',
-            eventVersion: 1,
             exchange: 'payments',
             routingKey: 'payment.expired',
             payload: { paymentId: payment.id, orderId: payment.orderId },
             metadata: { source: 'payment.lifecycle.expiry' },
             occurredAt: new Date(this.nowMs()),
-          },
+          }),
         });
         return true;
       }, { timeout: 10000 });
@@ -242,12 +240,10 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
         const issued = await this.uploadTokens.issue(tx, payment.id);
 
         await tx.outboxEvent.create({
-          data: {
-            id: randomUUID(),
+          data: buildOutboxEvent({
             aggregateType: 'payment',
             aggregateId: payment.id,
             eventName: 'payment.reminder',
-            eventVersion: 1,
             exchange: 'payments',
             routingKey: 'payment.reminder',
             payload: {
@@ -260,7 +256,7 @@ export class PaymentLifecycleWorker implements OnApplicationBootstrap, OnModuleD
             },
             metadata: { source: 'payment.lifecycle.reminder' },
             occurredAt: new Date(this.nowMs()),
-          },
+          }),
         });
         return true;
       }, { timeout: 10000 });

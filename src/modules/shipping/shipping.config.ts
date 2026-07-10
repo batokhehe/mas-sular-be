@@ -1,3 +1,4 @@
+import { nonNegativeInt as positiveInt } from '../../common/utils/number.util';
 export const SHIPPING_CONFIG = 'SHIPPING_CONFIG';
 
 export interface PaxelProviderConfig {
@@ -31,11 +32,6 @@ export interface ShippingConfig {
    * for a real customer.
    */
   allowMockRates: boolean;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback;
 }
 
 function bool(value: string | undefined): boolean {

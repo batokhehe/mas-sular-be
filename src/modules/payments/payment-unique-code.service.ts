@@ -1,8 +1,11 @@
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
-import { PaymentMethod, PaymentStatus } from '@prisma/client';
+import { PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { randomInt } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { PAYMENT_UNIQUE_CODE_CONFIG, PaymentUniqueCodeConfig } from './payment-unique-code.config';
+
+/** Subset of the Prisma client the allocator needs — a tx client or the root client. */
+type PaymentReader = Pick<PrismaService, 'payment'> | Prisma.TransactionClient;
 
 /**
  * Allocates the manual BANK_TRANSFER "unique code" — a random 3-digit surcharge
@@ -24,22 +27,28 @@ export class PaymentUniqueCodeService {
   }
 
   /**
-   * Allocate a collision-free unique code for a BANK_TRANSFER order whose amount
-   * (before the code) is `baseAmount`. Returns null when the feature is disabled —
-   * callers then keep the legacy amount unchanged. Draws random codes in
-   * [min, max] and retries on collision; throws after `maxAttempts` exhausted.
+   * C4: transactional allocation — the collision re-check runs on the CALLER's
+   * checkout transaction immediately before the payment row is created, closing
+   * the pre-transaction check-then-act window (up to 10 attempts). Concurrent
+   * committed PENDING transfers with the same total are seen; the residual
+   * window is two uncommitted transactions racing (accepted: no unique index by
+   * requirement).
    */
-  async allocate(baseAmount: number): Promise<number | null> {
+  async allocateInTx(tx: Prisma.TransactionClient, baseAmount: number): Promise<number | null> {
+    return this.draw(tx, baseAmount, Math.max(10, this.config.maxAttempts));
+  }
+
+  private async draw(client: PaymentReader, baseAmount: number, maxAttempts: number): Promise<number | null> {
     if (!this.config.enabled) return null;
 
-    const { min, max, maxAttempts } = this.config;
+    const { min, max } = this.config;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       // Cryptographically random (never sequential). randomInt's upper bound is
       // exclusive → +1 to make `max` inclusive.
       const code = randomInt(min, max + 1);
       const finalAmount = baseAmount + code;
 
-      const clash = await this.prisma.payment.findFirst({
+      const clash = await client.payment.findFirst({
         where: {
           method: PaymentMethod.BANK_TRANSFER,
           status: PaymentStatus.PENDING,

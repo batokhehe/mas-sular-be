@@ -16,10 +16,13 @@ const UPDATED_PAYMENT = {
 // Pre-read row (still verifiable): non-terminal status.
 const PENDING_PAYMENT = { ...UPDATED_PAYMENT, status: 'WAITING_VERIFICATION' };
 
-function buildTx(failOp: FailOp, casCount = 1) {
+function buildTx(failOp: FailOp, casCount = 1, orderStatus = 'PENDING') {
   const tx = {
     payment: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
-    order: { update: jest.fn() },
+    // F4: FOR UPDATE status read + legal-transition CAS + explicit event row.
+    $queryRaw: jest.fn().mockResolvedValue([{ status: orderStatus }]),
+    order: { updateMany: jest.fn() },
+    orderEvent: { create: jest.fn().mockResolvedValue({}) },
     auditLog: { create: jest.fn() },
     outboxEvent: { create: jest.fn() },
   };
@@ -27,8 +30,8 @@ function buildTx(failOp: FailOp, casCount = 1) {
     failOp === 'payment' ? Promise.reject(new Error('payment update failed')) : Promise.resolve({ count: casCount }),
   );
   tx.payment.findUniqueOrThrow.mockResolvedValue(UPDATED_PAYMENT);
-  tx.order.update.mockImplementation(() =>
-    failOp === 'order' ? Promise.reject(new Error('order update failed')) : Promise.resolve({ id: 'order-1' }),
+  tx.order.updateMany.mockImplementation(() =>
+    failOp === 'order' ? Promise.reject(new Error('order update failed')) : Promise.resolve({ count: orderStatus === 'PENDING' ? 1 : 0 }),
   );
   tx.auditLog.create.mockImplementation(() =>
     failOp === 'audit' ? Promise.reject(new Error('audit insert failed')) : Promise.resolve({ id: 'audit-1' }),
@@ -68,7 +71,12 @@ describe('AdminService.verifyPayment — hardened verification', () => {
       where: { id: 'pay-1', status: { notIn: ['PAID', 'FAILED', 'EXPIRED', 'REFUNDED'] } },
       data: expect.objectContaining({ status: 'PAID', verifiedByUserId: 'admin-1' }),
     });
-    expect(tx.order.update).toHaveBeenCalledTimes(1);
+    // Order flip is CAS-gated to PENDING → PROCESSING (F4) with an explicit event.
+    expect(tx.order.updateMany).toHaveBeenCalledWith({
+      where: { id: 'order-1', status: 'PENDING' },
+      data: { status: 'PROCESSING' },
+    });
+    expect(tx.orderEvent.create).toHaveBeenCalledTimes(1);
     expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
     expect(tx.outboxEvent.create).toHaveBeenCalledTimes(1);
     expect(result).toBe(UPDATED_PAYMENT);
@@ -103,7 +111,7 @@ describe('AdminService.verifyPayment — hardened verification', () => {
 
     expect(result).toBe(current); // returns the current payment
     expect(prisma.$transaction).not.toHaveBeenCalled(); // no work
-    expect(tx.order.update).not.toHaveBeenCalled(); // no order update
+    expect(tx.order.updateMany).not.toHaveBeenCalled(); // no order update
     expect(tx.auditLog.create).not.toHaveBeenCalled(); // no audit log
     expect(tx.outboxEvent.create).not.toHaveBeenCalled(); // no event
   });
@@ -128,7 +136,7 @@ describe('AdminService.verifyPayment — hardened verification', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(tx.payment.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.payment.findUniqueOrThrow).not.toHaveBeenCalled();
-    expect(tx.order.update).not.toHaveBeenCalled();
+    expect(tx.order.updateMany).not.toHaveBeenCalled();
     expect(tx.outboxEvent.create).not.toHaveBeenCalled();
   });
 
@@ -137,7 +145,7 @@ describe('AdminService.verifyPayment — hardened verification', () => {
     const prisma = buildPrisma(tx, { ...PENDING_PAYMENT });
 
     await expect(invoke(prisma)).rejects.toThrow('payment update failed');
-    expect(tx.order.update).not.toHaveBeenCalled();
+    expect(tx.order.updateMany).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
     expect(tx.outboxEvent.create).not.toHaveBeenCalled();
   });
@@ -165,6 +173,28 @@ describe('AdminService.verifyPayment — hardened verification', () => {
 
     await expect(invoke(prisma)).rejects.toThrow('outbox insert failed');
     expect(tx.outboxEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('F4: a CANCELLED order rejects verification — payment flip rolls back, nothing emitted', async () => {
+    const tx = buildTx(undefined, 1, 'CANCELLED');
+    const prisma = buildPrisma(tx, { ...PENDING_PAYMENT });
+
+    await expect(invoke(prisma)).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.order.updateMany).not.toHaveBeenCalled(); // never revived
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+    expect(tx.outboxEvent.create).not.toHaveBeenCalled(); // no payment.paid for a cancelled order
+  });
+
+  it('F4: an order already advanced past PROCESSING keeps its status (no backwards transition), payment still verifies', async () => {
+    const tx = buildTx(undefined, 1, 'SHIPPED');
+    const prisma = buildPrisma(tx, { ...PENDING_PAYMENT });
+
+    const result = await invoke(prisma);
+
+    expect(result).toBe(UPDATED_PAYMENT); // verification succeeded
+    expect(tx.order.updateMany).toHaveBeenCalledTimes(1); // CAS attempted…
+    expect(tx.orderEvent.create).not.toHaveBeenCalled(); // …lost (count 0) → no PROCESSING event
+    expect(tx.outboxEvent.create).toHaveBeenCalledTimes(1); // payment.paid still emitted
   });
 
   it('unknown payment: 404 before any transaction is opened', async () => {

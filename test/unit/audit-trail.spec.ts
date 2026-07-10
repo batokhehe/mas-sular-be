@@ -162,6 +162,37 @@ describe('AuditTrailService', () => {
     expect(chunks[1]).toContain('"Bakso ""Urat"""'); // quote escaped
     expect(res.end).toHaveBeenCalled();
   });
+
+  // --- Regression: ML-2 — a cancelled download stops the export immediately. ---
+  it('export: a client gone BEFORE the loop performs zero database reads', async () => {
+    const { service, prisma } = build();
+    const res = { setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), writableEnded: true };
+    await expect(service.exportCsv({}, res as never)).resolves.toBeUndefined(); // never throws
+    expect(prisma.auditTrail.findMany).not.toHaveBeenCalled();
+    expect(res.end).not.toHaveBeenCalled(); // nothing to end — socket is gone
+  });
+
+  it('export: an abort mid-batch stops row generation and further batches', async () => {
+    const { service, prisma } = build();
+    const row = (i: number) => ({ id: `a${i}`, createdAt: new Date(), adminName: 'A', adminId: 'x', module: 'm', entity: 'E', entityId: 'e', entityName: 'n', action: 'UPDATE', success: true, diff: [], requestId: 'r', ipAddress: 'ip' });
+    // A FULL batch (EXPORT_BATCH = 1000) — without the abort the loop would fetch a second batch.
+    prisma.auditTrail.findMany.mockResolvedValue(Array.from({ length: 1000 }, (_, i) => row(i)));
+    let closeCb: (() => void) | undefined;
+    let writes = 0;
+    const res = {
+      setHeader: jest.fn(),
+      end: jest.fn(),
+      req: { on: (evt: string, cb: () => void) => { if (evt === 'close') closeCb = cb; } },
+      write: jest.fn(() => {
+        writes += 1;
+        if (writes === 5) closeCb?.(); // browser cancels mid-batch
+      }),
+    };
+    await expect(service.exportCsv({}, res as never)).resolves.toBeUndefined();
+    expect(prisma.auditTrail.findMany).toHaveBeenCalledTimes(1); // no second batch read
+    expect(writes).toBeLessThan(20); // stopped right after the abort, not after 200 rows
+    expect(res.end).not.toHaveBeenCalled();
+  });
 });
 
 describe('Audit permissions', () => {

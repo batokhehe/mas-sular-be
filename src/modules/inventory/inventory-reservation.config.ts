@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const INVENTORY_RESERVATION_CONFIG = 'INVENTORY_RESERVATION_CONFIG';
 
 export interface InventoryReservationConfig {
@@ -7,11 +8,6 @@ export interface InventoryReservationConfig {
   initialDelayMs: number;
   batchSize: number;
   healthLogIntervalMs: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadInventoryReservationConfig(env: NodeJS.ProcessEnv = process.env): InventoryReservationConfig {

@@ -1,9 +1,9 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Payment, PaymentStatus, Prisma } from '@prisma/client';
-import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { UploadManualPaymentDto } from './application/dto/payment.dto';
 import { PaymentUploadTokenService } from './payment-upload-token.service';
+import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
 
 // A receipt may only be uploaded while the payment is still awaiting payment/verification.
 const UPLOADABLE_STATUSES: PaymentStatus[] = [PaymentStatus.PENDING, PaymentStatus.WAITING_VERIFICATION];
@@ -63,18 +63,15 @@ export class PaymentsService {
     }
     const payment = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
     await tx.outboxEvent.create({
-      data: {
-        id: randomUUID(),
+      data: buildOutboxEvent({
         aggregateType: 'payment',
         aggregateId: payment.id,
         eventName: 'payment.receipt_uploaded',
-        eventVersion: 1,
         exchange: 'payments',
         routingKey: 'payment.receipt_uploaded',
         payload: { paymentId: payment.id, orderId: payment.orderId },
         metadata: { source },
-        occurredAt: new Date(),
-      },
+      }),
     });
     return payment;
   }

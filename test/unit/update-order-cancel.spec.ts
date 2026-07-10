@@ -93,3 +93,56 @@ describe('AdminService.updateOrderStatus(CANCELLED) — cancellation + restock',
     });
   });
 });
+
+// ---------------- F2: restock fallback discriminator ----------------
+// The legacy Product.stock increment must run ONLY for pre-reservation orders
+// (no reservation rows AT ALL). Reservation-era orders whose reservations are
+// already terminal (e.g. EXPIRED by the reservation worker before this
+// cancellation) must NOT fall through — that double-restock inflated stock.
+describe('OrderCancellationService restock fallback (F2)', () => {
+  function buildCancelTx(reservationRowCount: number) {
+    return {
+      order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      orderEvent: { create: jest.fn().mockResolvedValue({}) },
+      inventoryReservation: { count: jest.fn().mockResolvedValue(reservationRowCount) },
+      orderItem: { findMany: jest.fn().mockResolvedValue([{ productId: 'p1', quantity: 3 }]) },
+      product: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+  }
+
+  it('reservation-era order with only TERMINAL reservations → release runs, NO legacy restock', async () => {
+    const inventory = { releaseForOrder: jest.fn().mockResolvedValue({ handled: false }) }; // nothing active
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new OrderCancellationService(inventory as any);
+    const tx = buildCancelTx(2); // rows exist (EXPIRED/RELEASED)
+
+    const { cancelled } = await service.cancelAndRestock(tx as never, 'order-1', 'expiry after worker');
+
+    expect(cancelled).toBe(true);
+    expect(inventory.releaseForOrder).toHaveBeenCalled();
+    expect(tx.product.updateMany).not.toHaveBeenCalled(); // ← the F2 fix
+    expect(tx.orderItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('pre-reservation (legacy) order with ZERO reservation rows → legacy restock still runs', async () => {
+    const inventory = { releaseForOrder: jest.fn().mockResolvedValue({ handled: false }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new OrderCancellationService(inventory as any);
+    const tx = buildCancelTx(0);
+
+    await service.cancelAndRestock(tx as never, 'order-1', 'legacy cancel');
+
+    expect(tx.product.updateMany).toHaveBeenCalledWith({ where: { id: 'p1' }, data: { stock: { increment: 3 } } });
+  });
+
+  it('active reservations → release handles stock; no fallback', async () => {
+    const inventory = { releaseForOrder: jest.fn().mockResolvedValue({ handled: true }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new OrderCancellationService(inventory as any);
+    const tx = buildCancelTx(2);
+
+    await service.cancelAndRestock(tx as never, 'order-1', 'reject');
+
+    expect(tx.product.updateMany).not.toHaveBeenCalled();
+  });
+});

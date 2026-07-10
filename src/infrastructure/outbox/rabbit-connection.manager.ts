@@ -1,7 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as amqp from 'amqplib';
 import { OUTBOX_CONFIG, OutboxRelayConfig } from './outbox.config';
-import { amqpErrorInfo, describeAmqpTarget } from '../../common/diagnostics/amqp-redact';
 
 /**
  * Owns a single shared AMQP connection and one confirm channel for the relay.
@@ -69,19 +68,7 @@ export class RabbitConnectionManager implements OnModuleDestroy {
     if (!this.config.rabbitmqUrl) {
       throw new Error('RABBITMQ_URL is not configured');
     }
-    // TEMP DIAGNOSTICS (remove once staging RabbitMQ is confirmed): attempt /
-    // success / failure on the real connection path. Credentials are never logged.
-    // Behavior is unchanged — the error is rethrown exactly as before.
-    const target = describeAmqpTarget(this.config.rabbitmqUrl);
-    this.logger.log(`AMQP connection attempt -> ${target}`);
-    let connection: amqp.Connection;
-    try {
-      connection = await amqp.connect(this.config.rabbitmqUrl);
-    } catch (err) {
-      this.logger.error(`AMQP connection FAILED -> ${target} ${amqpErrorInfo(err)}`);
-      throw err;
-    }
-    this.logger.log(`AMQP connection success -> ${target}`);
+    const connection = await amqp.connect(this.config.rabbitmqUrl);
     connection.on('error', (err: Error) => this.logger.error(`AMQP connection error: ${err.message}`));
     connection.on('close', () => this.handleClose());
     this.connection = connection;

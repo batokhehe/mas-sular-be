@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const IDEMPOTENCY_CONFIG = 'IDEMPOTENCY_CONFIG';
 
 export type ReplayMode = 'snapshot' | 'rehydrate';
@@ -20,11 +21,6 @@ export interface IdempotencyConfig {
   reclaimMs: number;
   /** Retry-After value (seconds) returned for an in-progress (PROCESSING) request. */
   retryAfterSeconds: number;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadIdempotencyConfig(env: NodeJS.ProcessEnv = process.env): IdempotencyConfig {

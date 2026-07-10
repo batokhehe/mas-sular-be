@@ -3,6 +3,7 @@ import { PaymentMethod, Prisma, ReservationStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ListReservationsQueryDto } from './application/dto/inventory-reservation-query.dto';
 import { pageArgs, paginate } from '../../common/pagination/pagination';
+import { positiveInt } from '../../common/utils/number.util';
 
 const ADMIN_INCLUDE = {
   order: { select: { id: true, orderNumber: true, user: { select: { id: true, name: true, email: true } } } },
@@ -22,11 +23,6 @@ export interface ReserveArgs {
   /** Allocated outlet (multi-outlet). When set, stock is tracked per-outlet in
    *  ProductInventory; otherwise the legacy Product.stock path is used. */
   outletId?: string | null;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 /**
@@ -134,15 +130,30 @@ export class InventoryReservationService {
   /**
    * Commit every RESERVED reservation for an order: deduct Product.stock by
    * reservedQty and mark COMMITTED. Called after payment is verified.
+   *
+   * C2: the RESERVED → COMMITTED transition is a per-row CAS. A reservation the
+   * expiry worker flipped to EXPIRED between our snapshot read and this write
+   * loses the CAS and is SKIPPED — never resurrected, never double-counted.
    */
   async commitForOrder(tx: Prisma.TransactionClient, orderId: string, note = 'Committed on payment verified'): Promise<number> {
     const reservations = await tx.inventoryReservation.findMany({
       where: { orderId, status: ReservationStatus.RESERVED },
     });
+    let committed = 0;
     for (const r of reservations) {
-      const pi = await this.piFor(tx, r.productId, r.outletId);
+      const flip = await tx.inventoryReservation.updateMany({
+        where: { id: r.id, status: ReservationStatus.RESERVED },
+        data: { status: ReservationStatus.COMMITTED, committedQty: r.reservedQty },
+      });
+      if (flip.count !== 1) {
+        this.logger.warn(`reservation ${r.id} left RESERVED before commit (expired concurrently) — skipped`);
+        continue; // stock/hold already handled by whoever won the transition
+      }
+
+      const pi = await this.lockedPiFor(tx, r.productId, r.outletId);
       if (pi) {
-        // Multi-outlet: deduct outlet stock and release the hold.
+        // Multi-outlet: deduct outlet stock and release the hold. `available` is
+        // recomputed from the FOR UPDATE row (C5): (stock−q) − (reserved−q).
         await tx.productInventory.update({
           where: { id: pi.id },
           data: { stock: { decrement: r.reservedQty }, reserved: { decrement: r.reservedQty }, available: pi.stock - pi.reserved },
@@ -150,19 +161,32 @@ export class InventoryReservationService {
       } else {
         await tx.product.update({ where: { id: r.productId }, data: { stock: { decrement: r.reservedQty } } });
       }
-      await tx.inventoryReservation.update({
-        where: { id: r.id },
-        data: { status: ReservationStatus.COMMITTED, committedQty: r.reservedQty },
-      });
       await this.addHistory(tx, r.id, ReservationStatus.COMMITTED, note);
+      committed += 1;
     }
-    return reservations.length;
+    return committed;
   }
 
-  /** Look up the per-outlet inventory row for a reservation (null → legacy path). */
-  private async piFor(tx: Prisma.TransactionClient, productId: string, outletId: string | null) {
+  /**
+   * Per-outlet inventory row locked FOR UPDATE (C5) — mirrors reserveForOrder's
+   * locking so `available` is always recomputed from current, serialized values
+   * (never a stale snapshot). Null → legacy Product.stock path.
+   */
+  private async lockedPiFor(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    outletId: string | null,
+  ): Promise<{ id: string; stock: number; reserved: number } | null> {
     if (!outletId) return null;
-    return tx.productInventory.findUnique({ where: { productId_outletId: { productId, outletId } } });
+    const pi = await tx.productInventory.findUnique({
+      where: { productId_outletId: { productId, outletId } },
+      select: { id: true },
+    });
+    if (!pi) return null;
+    const rows = await tx.$queryRaw<Array<{ id: string; stock: number; reserved: number }>>(
+      Prisma.sql`SELECT id, stock, reserved FROM ProductInventory WHERE id = ${pi.id} FOR UPDATE`,
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -182,9 +206,23 @@ export class InventoryReservationService {
     });
     for (const r of reservations) {
       const releasedQty = r.status === ReservationStatus.COMMITTED ? r.committedQty : r.reservedQty;
-      const pi = await this.piFor(tx, r.productId, r.outletId);
+      // CAS on the OBSERVED status (C2-style): if the expiry worker (or a
+      // concurrent commit) transitioned this row after our snapshot read, skip it
+      // — the winner already adjusted stock/hold, touching counters again would
+      // corrupt them.
+      const flip = await tx.inventoryReservation.updateMany({
+        where: { id: r.id, status: r.status },
+        data: { status, releasedQty },
+      });
+      if (flip.count !== 1) {
+        this.logger.warn(`reservation ${r.id} changed state before release — skipped`);
+        continue;
+      }
+
+      const pi = await this.lockedPiFor(tx, r.productId, r.outletId);
       if (pi) {
         // Multi-outlet: COMMITTED → restock outlet; RESERVED → free the hold.
+        // `available` recomputed from the FOR UPDATE row (C5).
         if (r.status === ReservationStatus.COMMITTED && r.committedQty > 0) {
           await tx.productInventory.update({
             where: { id: pi.id },
@@ -199,7 +237,6 @@ export class InventoryReservationService {
       } else if (r.status === ReservationStatus.COMMITTED && r.committedQty > 0) {
         await tx.product.update({ where: { id: r.productId }, data: { stock: { increment: r.committedQty } } });
       }
-      await tx.inventoryReservation.update({ where: { id: r.id }, data: { status, releasedQty } });
       await this.addHistory(tx, r.id, status, note);
     }
     return { handled: reservations.length > 0 };
@@ -224,7 +261,8 @@ export class InventoryReservationService {
       // RESERVED reservation never deducted stock, so only `reserved` is freed
       // (stock unchanged). Legacy reservations without a ProductInventory row never
       // touched per-outlet inventory → nothing to release (backward compatible).
-      const pi = await this.piFor(tx, row?.productId ?? '', row?.outletId ?? null);
+      // Row locked FOR UPDATE (C5) so `available` is recomputed from current values.
+      const pi = await this.lockedPiFor(tx, row?.productId ?? '', row?.outletId ?? null);
       if (pi) {
         await tx.productInventory.update({
           where: { id: pi.id },

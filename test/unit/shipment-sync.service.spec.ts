@@ -23,7 +23,8 @@ function buildTx() {
   return {
     shipment: { update: jest.fn().mockResolvedValue({}) },
     shipmentHistory: { create: jest.fn().mockResolvedValue({}) },
-    order: { update: jest.fn().mockResolvedValue({}) },
+    order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    orderEvent: { create: jest.fn().mockResolvedValue({}) },
     notificationOutbox: { create: jest.fn().mockResolvedValue({}) },
   };
 }
@@ -58,7 +59,10 @@ describe('ShipmentSyncService', () => {
         data: expect.objectContaining({ providerStatus: 'DELIVERED', mappedStatus: ShipmentStatus.DELIVERED }),
       }),
     );
-    expect(prisma.__tx.order.update.mock.calls[0][0].data.status).toBe('DELIVERED');
+    const flip = prisma.__tx.order.updateMany.mock.calls[0][0];
+    expect(flip.data.status).toBe('DELIVERED');
+    expect(flip.where.status.in).not.toContain('CANCELLED'); // F4: never revives a cancelled order
+    expect(prisma.__tx.orderEvent.create).toHaveBeenCalled();
     const notif = prisma.__tx.notificationOutbox.create.mock.calls[0][0].data;
     expect(notif.template).toBe('shipment.status');
     expect(notif.payload.shipmentStatus).toBe(ShipmentStatus.DELIVERED);

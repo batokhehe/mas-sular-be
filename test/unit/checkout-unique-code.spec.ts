@@ -45,7 +45,7 @@ function buildPrisma(tx = buildTx()) {
 }
 
 /** Build the service with an (optionally enabled) unique-code service in the 8th slot. */
-function build(uniqueCode?: { isEnabled: () => boolean; allocate: jest.Mock }, prisma = buildPrisma()) {
+function build(uniqueCode?: { isEnabled: () => boolean; allocateInTx: jest.Mock }, prisma = buildPrisma()) {
   const shipping = { calculateRateForCourier: jest.fn().mockResolvedValue({ cost: 10000, etd: '2 days' }) };
   const idempotency = { isCheckoutEnabled: jest.fn().mockReturnValue(false) };
   const uploadTokens = { issue: jest.fn().mockResolvedValue({ rawToken: 'raw', uploadUrl: 'https://app/payments/upload/raw', expiresAt: new Date() }) };
@@ -60,7 +60,7 @@ function build(uniqueCode?: { isEnabled: () => boolean; allocate: jest.Mock }, p
 }
 
 function enabledCode(code: number | null) {
-  return { isEnabled: () => true, allocate: jest.fn().mockResolvedValue(code) };
+  return { isEnabled: () => true, allocateInTx: jest.fn().mockResolvedValue(code) };
 }
 
 function orderCreateData(prisma: ReturnType<typeof buildPrisma>) {
@@ -77,7 +77,7 @@ describe('Checkout — BANK_TRANSFER unique code', () => {
     const { service, prisma } = build(uc);
     await service.checkout(USER, dto({ payment_method: PaymentMethod.BANK_TRANSFER }));
 
-    expect(uc.allocate).toHaveBeenCalledWith(BASE_AMOUNT);
+    expect(uc.allocateInTx).toHaveBeenCalledWith(expect.anything(), BASE_AMOUNT); // inside the checkout tx
     const data = orderCreateData(prisma);
     // Accounting split: Order.totalPrice is the BUSINESS total (no code)...
     expect(data.totalPrice).toBe(BASE_AMOUNT);
@@ -100,7 +100,7 @@ describe('Checkout — BANK_TRANSFER unique code', () => {
     const { service, prisma } = build(uc);
     await service.checkout(USER, dto({ payment_method: PaymentMethod.QRIS }));
 
-    expect(uc.allocate).not.toHaveBeenCalled();
+    expect(uc.allocateInTx).not.toHaveBeenCalled();
     const data = orderCreateData(prisma);
     expect(data.totalPrice).toBe(BASE_AMOUNT);
     expect(data.payment.create.amount).toBe(BASE_AMOUNT);
@@ -112,18 +112,18 @@ describe('Checkout — BANK_TRANSFER unique code', () => {
     const { service, prisma } = build(uc);
     await service.checkout(USER, dto({ payment_method: PaymentMethod.COD }));
 
-    expect(uc.allocate).not.toHaveBeenCalled();
+    expect(uc.allocateInTx).not.toHaveBeenCalled();
     const data = orderCreateData(prisma);
     expect(data.totalPrice).toBe(BASE_AMOUNT);
     expect(data.payment.create.uniqueCode).toBeNull();
   });
 
   it('disabled config behaves exactly like the old implementation (no code, amount = base)', async () => {
-    const uc = { isEnabled: () => false, allocate: jest.fn() };
+    const uc = { isEnabled: () => false, allocateInTx: jest.fn() };
     const { service, prisma } = build(uc);
     await service.checkout(USER, dto({ payment_method: PaymentMethod.BANK_TRANSFER }));
 
-    expect(uc.allocate).not.toHaveBeenCalled();
+    expect(uc.allocateInTx).not.toHaveBeenCalled();
     const data = orderCreateData(prisma);
     expect(data.totalPrice).toBe(BASE_AMOUNT);
     expect(data.payment.create.amount).toBe(BASE_AMOUNT);

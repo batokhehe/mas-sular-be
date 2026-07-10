@@ -20,7 +20,7 @@ function buildPrisma() {
     $executeRawUnsafe: jest.fn().mockResolvedValue(1),
     outboxEvent: {
       findMany: jest.fn().mockResolvedValue([]),
-      update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }), // fenced write-back (C1)
       count: jest.fn().mockResolvedValue(0),
       findFirst: jest.fn().mockResolvedValue(null),
     },
@@ -51,7 +51,7 @@ function row(overrides: Record<string, unknown> = {}) {
     maxAttempts: 10,
     nextAttemptAt: new Date(0),
     lockedUntil: null,
-    lockedBy: null,
+    lockedBy: 'relay#claim-1',
     lastError: null,
     occurredAt: new Date('2026-06-11T00:00:00.000Z'),
     createdAt: new Date('2026-06-11T00:00:00.000Z'),
@@ -108,8 +108,8 @@ describe('OutboxRelayWorker', () => {
         expect.any(Buffer),
         expect.objectContaining({ messageId: 'evt-1', persistent: true, contentType: 'application/json', type: 'payment.paid' }),
       );
-      expect(prisma.outboxEvent.update).toHaveBeenCalledWith({
-        where: { id: 'evt-1' },
+      expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'evt-1', lockedBy: 'relay#claim-1' }, // fenced on the claim (C1)
         data: expect.objectContaining({ status: 'PUBLISHED', lockedBy: null, lockedUntil: null }),
       });
     });
@@ -136,7 +136,7 @@ describe('OutboxRelayWorker', () => {
 
       await worker.processBatch();
 
-      const data = prisma.outboxEvent.update.mock.calls[0][0].data;
+      const data = prisma.outboxEvent.updateMany.mock.calls[0][0].data;
       expect(data.attempts).toBe(1);
       expect(data.status).toBeUndefined(); // stays PENDING
       expect(data.lastError).toBe('broker down');
@@ -152,8 +152,8 @@ describe('OutboxRelayWorker', () => {
 
       await worker.processBatch();
 
-      expect(prisma.outboxEvent.update).toHaveBeenCalledWith({
-        where: { id: 'evt-1' },
+      expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'evt-1', lockedBy: 'relay#claim-1' },
         data: expect.objectContaining({ status: 'FAILED', attempts: 10, lastError: 'still down' }),
       });
     });
@@ -166,7 +166,7 @@ describe('OutboxRelayWorker', () => {
 
       await worker.processBatch();
 
-      const data = prisma.outboxEvent.update.mock.calls[0][0].data;
+      const data = prisma.outboxEvent.updateMany.mock.calls[0][0].data;
       expect((data.nextAttemptAt as Date).getTime()).toBe(1_050_000);
     });
   });
@@ -177,15 +177,15 @@ describe('OutboxRelayWorker', () => {
       prisma.outboxEvent.findMany.mockResolvedValue([row()]);
       rabbit.publishWithConfirm.mockResolvedValue(undefined); // broker CONFIRMED
       // ...but the PUBLISHED mark fails; the retry update then succeeds
-      prisma.outboxEvent.update
+      prisma.outboxEvent.updateMany
         .mockRejectedValueOnce(new Error('db hiccup'))
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({ count: 1 });
 
       await worker.processBatch();
 
       // first update attempted PUBLISHED, failed; second update reschedules (attempts=1)
-      expect(prisma.outboxEvent.update).toHaveBeenCalledTimes(2);
-      const retry = prisma.outboxEvent.update.mock.calls[1][0].data;
+      expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(2);
+      const retry = prisma.outboxEvent.updateMany.mock.calls[1][0].data;
       expect(retry.attempts).toBe(1);
       expect(retry.status).toBeUndefined(); // still PENDING -> will be re-published
     });
@@ -229,5 +229,24 @@ describe('OutboxRelayWorker', () => {
       worker.onApplicationBootstrap();
       expect((worker as any).timer).toBeNull();
     });
+  });
+});
+
+// --- Regression: C1 — fenced write-back. ---
+describe('lease fencing (C1)', () => {
+  it('a stale relay that lost its lease gives up silently (row stays with the new owner)', async () => {
+    const { worker, prisma, rabbit } = build();
+    prisma.outboxEvent.findMany.mockResolvedValue([row()]);
+    rabbit.publishWithConfirm.mockResolvedValue(undefined); // broker confirmed
+    prisma.outboxEvent.updateMany.mockResolvedValue({ count: 0 }); // lease reclaimed
+
+    await expect(worker.processBatch()).resolves.not.toThrow();
+
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'evt-1', lockedBy: 'relay#claim-1' } }),
+    );
+    // markPublished lost → fenced scheduleRetry is NOT attempted as an overwrite;
+    // exactly one fenced write-back ran.
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
   });
 });

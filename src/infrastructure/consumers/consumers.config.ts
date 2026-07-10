@@ -1,3 +1,4 @@
+import { positiveInt } from '../../common/utils/number.util';
 export const CONSUMERS_CONFIG = 'CONSUMERS_CONFIG';
 
 export interface ConsumersConfig {
@@ -13,11 +14,6 @@ export interface ConsumersConfig {
   retryDelayMs: number;
   /** Recipient for admin-facing notifications (e.g. a new payment receipt to verify). */
   adminNotificationEmail?: string;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 export function loadConsumersConfig(env: NodeJS.ProcessEnv = process.env): ConsumersConfig {
