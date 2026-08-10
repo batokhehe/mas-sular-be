@@ -51,6 +51,17 @@ const baseSchema = z
     PAYMENT_EXPIRY_MS: z.coerce.number().int().positive().optional(),
     PAYMENT_GATEWAY_EXPIRY_MS: z.coerce.number().int().nonnegative().optional(),
 
+    // Midtrans payment gateway (Phase 3). All optional: with MIDTRANS_ENABLED
+    // unset/false the provider is not registered and no key is required. The
+    // enabled+serverKey pairing is enforced by assertMidtransConfigured() at boot.
+    MIDTRANS_ENABLED: boolFlag,
+    MIDTRANS_SERVER_KEY: z.string().optional(),
+    MIDTRANS_CLIENT_KEY: z.string().optional(),
+    MIDTRANS_IS_PRODUCTION: boolFlag,
+    MIDTRANS_BASE_URL: z.string().url('MIDTRANS_BASE_URL must be a valid URL').optional(),
+    MIDTRANS_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+    MIDTRANS_MAX_RETRY: z.coerce.number().int().nonnegative().optional(),
+
     // Phase 13A — httpOnly auth cookies. All optional; cookie behavior is env-driven.
     COOKIE_DOMAIN: z.string().optional(),
     COOKIE_SECURE: z.enum(['true', 'false']).optional(),

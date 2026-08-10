@@ -1,6 +1,6 @@
 import { PaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsArray, IsEnum, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 
 export enum CheckoutCourier {
   PAXEL = 'paxel',
@@ -50,11 +50,22 @@ export class CreateOrderDto {
   shipping_service?: string;
 
   // Customer-selected payment method. Optional for backward compatibility;
-  // defaults to COD when omitted. Persisted to both Order.paymentMethod and
+  // defaults to BANK_TRANSFER when omitted (Phase 4A — COD is no longer
+  // selectable). Persisted to both Order.paymentMethod and
   // Payment.method so the two never diverge.
   @IsOptional()
   @IsEnum(PaymentMethod)
   payment_method?: PaymentMethod;
+
+  /**
+   * Customer-facing payment channel (QRIS, GOPAY, BCA_VA, …). Only meaningful for
+   * PaymentMethod.GATEWAY; ignored otherwise. Optional so every existing client
+   * — which sends only payment_method — keeps working unchanged.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  payment_channel?: string;
 
   @IsOptional()
   @IsString()

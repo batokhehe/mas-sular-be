@@ -29,19 +29,14 @@ import { pageArgs, paginate } from '../../common/pagination/pagination';
 import { buildOrderTimeline, computeAvailableActions } from './order-operations.util';
 import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
 
-// Payment terminal states: once a payment reaches any of these it is final and
-// no further transition is allowed. PENDING and WAITING_VERIFICATION are the
-// only verifiable/rejectable (non-terminal) states.
-const TERMINAL_PAYMENT_STATUSES: PaymentStatus[] = [
-  PaymentStatus.PAID,
-  PaymentStatus.FAILED,
-  PaymentStatus.EXPIRED,
-  PaymentStatus.REFUNDED,
-];
-
-function isTerminalPaymentStatus(status: PaymentStatus): boolean {
-  return TERMINAL_PAYMENT_STATUSES.includes(status);
-}
+// Payment terminal states now live with the settlement service (Phase 5D) so that
+// admin verification and gateway settlement cannot drift apart. Re-exported here
+// only for the reject flow below, which shares the same state machine.
+import {
+  isTerminalPaymentStatus,
+  PaymentSettlementService,
+  TERMINAL_PAYMENT_STATUSES,
+} from '../payments/settlement/payment-settlement.service';
 
 // Embed region names on address reads so admin Order/Customer/Shipping detail can
 // render the full hierarchy. Legacy addresses (null region ids) return null here
@@ -66,7 +61,24 @@ export class AdminService {
     // Optional: commits reservations on verify, releases on reject (legacy flow
     // when absent — stock was decremented at checkout).
     @Optional() private readonly inventory?: InventoryReservationService,
+    // Phase 5D: the shared settlement path. Optional so the many existing tests that
+    // construct AdminService positionally keep working — see `settlement` below.
+    @Optional() private readonly injectedSettlement?: PaymentSettlementService,
   ) { }
+
+  private lazySettlement?: PaymentSettlementService;
+
+  /**
+   * The shared settlement path. When Nest did not inject one (positional test
+   * construction), build it from the collaborators we already hold — the resulting
+   * behaviour is identical, because that is exactly what the DI container passes.
+   */
+  private get settlement(): PaymentSettlementService {
+    return (this.injectedSettlement ??
+      (this.lazySettlement ??= new PaymentSettlementService(
+        this.prisma, this.shipments, this.inventory, this.cancellation,
+      )));
+  }
 
   async getDashboard() {
     const startOfToday = new Date();
@@ -276,7 +288,14 @@ export class AdminService {
         address: ADDRESS_WITH_REGIONS,
         // product image/sku for the operations-center line items (select → no N+1).
         items: { include: { toppings: true, product: { select: { id: true, sku: true, imageUrl: true } } } },
-        payment: { include: { transactions: { orderBy: { createdAt: 'asc' } } } },
+        payment: {
+          include: {
+            transactions: { orderBy: { createdAt: 'asc' } },
+            // Phase 4: latest gateway attempt for the admin read-only panel
+            // (provider, provider status, gateway transaction id).
+            gatewayTransactions: { orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+        },
         shipment: { include: { history: { orderBy: { changedAt: 'asc' } } } },
         // Inventory reservations (allocated outlet + reserved qty) for the ops view.
         reservations: {
@@ -468,160 +487,35 @@ export class AdminService {
     });
   }
 
+  /**
+   * Admin verification. The transition itself lives in PaymentSettlementService
+   * (Phase 5D) so that admin verify and Midtrans settlement share ONE state machine,
+   * one inventory commit path, one shipment path and one payment.paid construction.
+   * The external contract here — 404, idempotent replay, 409 on a terminal status,
+   * and the returned Payment — is unchanged.
+   */
   async verifyPayment(paymentId: string, adminId: string, dto: VerifyAdminPaymentDto) {
-    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
-    if (!payment || payment.deletedAt) throw new NotFoundException('Payment not found');
-
-    // Idempotent replay: already in the target terminal state (PAID) → return the
-    // current payment with no side effects (no event, audit, or order update).
-    if (payment.status === PaymentStatus.PAID) {
-      return payment;
-    }
-    // Any OTHER terminal state (FAILED/EXPIRED/REFUNDED) cannot transition to PAID.
-    if (isTerminalPaymentStatus(payment.status)) {
-      throw new ConflictException(`Payment cannot be verified from terminal status ${payment.status}`);
-    }
-
-    const verifiedAt = new Date();
-    // Payment must never become PAID unless the order update, audit record, and
-    // outbox event all commit. All four writes run in one interactive transaction.
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // CAS over the non-terminal states. Under a concurrent double-verify only one
-      // call flips the row (count === 1); the loser aborts before emitting a second
-      // payment.paid — exactly-once event emission.
-      const flip = await tx.payment.updateMany({
-        where: { id: paymentId, status: { notIn: TERMINAL_PAYMENT_STATUSES } },
-        data: { status: PaymentStatus.PAID, verifiedByUserId: adminId, verifiedAt },
-      });
-      if (flip.count !== 1) {
-        throw new ConflictException('Payment already verified or rejected');
-      }
-      const updated = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
-
-      // Legal-transition guard (audit F4): a CANCELLED order must never be revived
-      // by a payment verification — its stock was already restocked. FOR UPDATE
-      // (same style as reserveForOrder) reads the CURRENT status and blocks a
-      // concurrent cancel until this tx commits; on conflict everything (incl. the
-      // payment flip above) rolls back and the admin gets a 409.
-      const rows = await tx.$queryRaw<Array<{ status: string }>>(
-        Prisma.sql`SELECT status FROM \`Order\` WHERE id = ${payment.orderId} FOR UPDATE`,
-      );
-      const orderStatus = rows[0]?.status;
-      if (!orderStatus || orderStatus === OrderStatus.CANCELLED) {
-        throw new ConflictException('Order is cancelled; the payment can no longer be verified');
-      }
-      // Move PENDING → PROCESSING; an order an admin already advanced past
-      // PROCESSING keeps its (further) status — never a backwards transition.
-      const orderFlip = await tx.order.updateMany({
-        where: { id: payment.orderId, status: OrderStatus.PENDING },
-        data: { status: OrderStatus.PROCESSING },
-      });
-      if (orderFlip.count === 1) {
-        await tx.orderEvent.create({
-          data: { orderId: payment.orderId, status: OrderStatus.PROCESSING, note: dto.note ?? 'Payment verified by admin' },
-        });
-      }
-
-      // Commit reservations: deduct Product.stock, mark COMMITTED — atomic with PAID.
-      let committed = 0;
-      if (this.inventory) {
-        committed = await this.inventory.commitForOrder(tx, payment.orderId);
-      }
-
-      // actorId is NULL: AuditLog.actorId FKs to User, but the verifier is an Admin.
-      // The admin identity is recorded in the JSON payload instead.
-      await tx.auditLog.create({
-        data: {
-          actorId: null,
-          action: 'payment.verified',
-          entity: 'Payment',
-          entityId: updated.id,
-          after: {
-            verifiedByAdminId: adminId,
-            status: 'PAID',
-            orderStatus: 'PROCESSING',
-            note: dto.note ?? null,
-            reservationsCommitted: committed,
-          },
-        },
-      });
-      await tx.outboxEvent.create({
-        data: buildOutboxEvent({
-          aggregateType: 'payment',
-          aggregateId: updated.id,
-          eventName: 'payment.paid',
-          exchange: 'payments',
-          routingKey: 'payment.paid',
-          payload: {
-            paymentId: updated.id,
-            orderId: updated.orderId,
-            amount: updated.amount,
-            status: 'PAID',
-            verifiedByUserId: updated.verifiedByUserId,
-            verifiedAt: verifiedAt.toISOString(),
-            orderStatus: 'PROCESSING',
-          },
-          metadata: { source: 'admin.verifyPayment' },
-          occurredAt: verifiedAt,
-        }),
-      });
-      return updated;
-    }, { timeout: 10000 });
-
-    // Payment is now PAID (committed). Create the shipment automatically — OUTSIDE
-    // the transaction and best-effort: if the courier API fails the payment stays
-    // verified and the shipment is marked FAILED (admin can retry). Never during
-    // checkout — only here, after PAID.
-    if (this.shipments) {
-      await this.shipments.createForOrderSafe(updated.orderId);
-    }
-    return updated;
+    const outcome = await this.settlement.settle(paymentId, {
+      kind: 'ADMIN',
+      adminId,
+      note: dto.note ?? null,
+    });
+    return outcome.payment;
   }
 
+  /**
+   * Admin rejection. Like verifyPayment, the transition itself lives in
+   * PaymentSettlementService (Phase 5E) so admin, webhook and reconciliation share
+   * ONE FAILED path. External contract unchanged: 404, idempotent replay, 409 on a
+   * terminal status, and the returned Payment.
+   */
   async rejectPayment(paymentId: string, dto: RejectAdminPaymentDto) {
-    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
-    if (!payment || payment.deletedAt) throw new NotFoundException('Payment not found');
-
-    // Idempotent replay: already in the target terminal state (FAILED) → return the
-    // current payment with no side effects (no restock, event, or order change).
-    if (payment.status === PaymentStatus.FAILED) {
-      return payment;
-    }
-    // Any OTHER terminal state (PAID/EXPIRED/REFUNDED) cannot transition to FAILED.
-    if (isTerminalPaymentStatus(payment.status)) {
-      throw new ConflictException(`Payment cannot be rejected from terminal status ${payment.status}`);
-    }
-
-    // Restock + cancellation + payment.failed must commit atomically. The payment
-    // FAILED transition is CAS-gated over the non-terminal states, so a concurrent
-    // reject flips the row once (count === 1); the loser aborts before emitting a
-    // second payment.failed. The order CANCELLED transition is independently CAS-
-    // gated, so it never double-restocks.
-    return this.prisma.$transaction(async (tx) => {
-      const paymentFlip = await tx.payment.updateMany({
-        where: { id: paymentId, status: { notIn: TERMINAL_PAYMENT_STATUSES } },
-        data: { status: PaymentStatus.FAILED },
-      });
-      if (paymentFlip.count !== 1) {
-        throw new ConflictException('Payment already in a terminal state');
-      }
-
-      await this.cancellation.cancelAndRestock(tx, payment.orderId, dto.note ?? 'Payment rejected by admin');
-
-      await tx.outboxEvent.create({
-        data: buildOutboxEvent({
-          aggregateType: 'payment',
-          aggregateId: payment.id,
-          eventName: 'payment.failed',
-          exchange: 'payments',
-          routingKey: 'payment.failed',
-          payload: { paymentId: payment.id, orderId: payment.orderId },
-          metadata: { source: 'admin.rejectPayment' },
-        }),
-      });
-
-      return tx.payment.findUnique({ where: { id: paymentId } });
-    }, { timeout: 10000 });
+    const outcome = await this.settlement.fail(
+      paymentId,
+      { kind: 'SYSTEM', source: 'admin.rejectPayment', note: dto.note ?? null },
+      dto.note ?? 'Payment rejected by admin',
+    );
+    return outcome.payment;
   }
 
   async createShipment(dto: CreateShipmentDto) {

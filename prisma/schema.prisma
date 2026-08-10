@@ -575,6 +575,8 @@ model Payment {
   webhookPayload    Json?
   order             Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
   transactions      Transaction[]
+  // Gateway attempt ledger (Phase 2). Back-relation only — Payment gains NO column.
+  gatewayTransactions PaymentGatewayTransaction[]
   uploadTokens      PaymentUploadToken[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
@@ -630,6 +632,131 @@ model Transaction {
   createdAt         DateTime      @default(now())
 
   @@index([paymentId, createdAt])
+}
+
+/// PROVIDER-level status vocabulary (Phase 2). Deliberately SEPARATE from
+/// PaymentStatus: gateways speak in authorization/capture/settlement terms that
+/// our business layer neither has nor needs. Translation happens in exactly one
+/// place — mapGatewayStatusToPaymentStatus() — and PaymentStatus is unchanged.
+enum GatewayTransactionStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  SETTLEMENT
+  FAILED
+  EXPIRED
+  CANCELLED
+  REFUNDED
+}
+
+/// Append-only ledger of gateway charge attempts and their provider responses.
+/// One Payment has 0..N of these (a retried charge, a channel switch, a status
+/// sync). Payment stays the business source of truth; this table is the audit
+/// chain and the future webhook-idempotency anchor. Nothing writes here unless
+/// PaymentInitiationService.initiate() is called.
+model PaymentGatewayTransaction {
+  id                    String                   @id @default(uuid())
+  paymentId             String
+  provider              String                   @db.VarChar(32)
+  channelCode           String                   @db.VarChar(32)
+  /// Provider's primary handle for this charge (Midtrans transaction_id, …).
+  providerReference     String?                  @db.VarChar(128)
+  /// The id WE sent to the provider (Midtrans order_id) — usually the order number.
+  providerOrderId       String?                  @db.VarChar(128)
+  /// Provider's own transaction id when it differs from providerReference.
+  providerTransactionId String?                  @db.VarChar(128)
+  status                GatewayTransactionStatus @default(PENDING)
+  /// Provider's own status word, stored VERBATIM ("settlement", "capture", "expire").
+  /// NOT a duplicate of `status`: that one is our normalized enum and is only moved
+  /// by a flow that also settles the Payment. Phase 5C records the provider's truth
+  /// here without mapping it — the mapping happens in 5D, atomically with the Payment.
+  providerStatus        String?                  @db.VarChar(32)
+  /// Event time of the notification that last wrote `providerStatus`. Used ONLY to
+  /// reject an unambiguously older notification (see the webhook fingerprint util).
+  providerStatusAt      DateTime?
+  grossAmount           Int
+  currency              String                   @default("IDR") @db.VarChar(3)
+  redirectUrl           String?                  @db.VarChar(512)
+  deeplinkUrl           String?                  @db.VarChar(512)
+  qrString              String?                  @db.Text
+  vaNumber              String?                  @db.VarChar(64)
+  expiryAt              DateTime?
+  /// Request/response snapshots — MUST be redacted before write (no card PANs, no keys).
+  rawRequest            Json?
+  rawResponse           Json?
+  metadata              Json?
+  failureReason         String?                  @db.VarChar(512)
+  payment               Payment                  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  /// Idempotency anchor: a provider transaction id can be recorded once. Multiple
+  /// NULLs are permitted by MySQL, so pending rows (id not yet known) never clash.
+  @@unique([provider, providerTransactionId])
+  @@index([paymentId, createdAt])
+  /// Webhook correlation key (Phase 5A): a gateway notification carries the
+  /// order_id WE sent, so this is the lookup path. Non-unique on purpose —
+  /// historical rows may hold a legacy value and NULLs are permitted.
+  @@index([provider, providerOrderId])
+  @@index([provider, providerReference])
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+/// Append-only ledger of VERIFIED provider webhook notifications (Phase 5C).
+///
+/// Why not `ProcessedEvent`: that table's `messageId` is `VarChar(36)` — sized for a
+/// broker UUID, not a 64-char digest — and widening it would change the dedup contract
+/// shared by every RabbitMQ consumer. It is also pruned by the retention worker on a
+/// window tuned to broker redelivery, which is the wrong lifecycle for a payment
+/// notification. Reusing it would have coupled two unrelated invariants.
+///
+/// `fingerprint` is UNIQUE: that constraint — not application logic — is what makes
+/// duplicate and concurrent deliveries collapse to exactly one effective processing.
+model PaymentWebhookEvent {
+  id                    String   @id @default(uuid())
+  provider              String   @db.VarChar(32)
+  /// SHA-256 of the canonical notification identity. THE deduplication invariant.
+  fingerprint           String   @unique @db.VarChar(64)
+  /// The id WE sent the provider — the correlation key, never the bare order number.
+  providerOrderId       String   @db.VarChar(128)
+  providerTransactionId String?  @db.VarChar(128)
+  transactionStatus     String?  @db.VarChar(32)
+  statusCode            String?  @db.VarChar(8)
+  fraudStatus           String?  @db.VarChar(32)
+  /// Verbatim amount string as signed by the provider — never normalized to a number.
+  grossAmount           String   @db.VarChar(32)
+  /// Correlated attempt. A plain column, not a relation: this table must survive
+  /// independently of the ledger row so the dedup key is never cascade-deleted.
+  gatewayTransactionId  String?  @db.VarChar(36)
+  /// ALLOWLISTED notification snapshot. `signature_key`, credentials and any
+  /// unrecognised field are excluded at build time — never written, never logged.
+  payload               Json?
+  /// Provider event time when it was parseable; NULL disables the ordering guard.
+  notifiedAt            DateTime?
+  /// How far BUSINESS processing got (Phase 5D). Receipt and settlement are tracked
+  /// separately on purpose: a notification whose authoritative status check failed
+  /// must stay re-processable, so its dedup row exists but is not yet terminal.
+  settlementState       WebhookSettlementState @default(RECEIVED)
+  processedAt           DateTime @default(now())
+
+  @@index([provider, providerOrderId, processedAt])
+  @@index([processedAt])
+  @@index([settlementState, processedAt])
+}
+
+/// Business-processing state of a received webhook notification (Phase 5D).
+enum WebhookSettlementState {
+  /// Recorded, business decision not yet reached — RE-PROCESSABLE on redelivery.
+  RECEIVED
+  /// Authoritative status confirmed payment and the settlement transaction committed.
+  SETTLED
+  /// Authoritative status was checked and does not warrant a transition (pending,
+  /// deny, expire, amount mismatch, …). Terminal for THIS notification.
+  NOT_ELIGIBLE
+  /// The Status API could not be reached or could not be trusted. NOT a success:
+  /// a redelivery must try again, so this never blocks reprocessing.
+  VERIFICATION_FAILED
 }
 
 model Shipment {

@@ -77,7 +77,8 @@ const PROCEED = { kind: 'proceed', record: { id: 'rec-1', fenceToken: 1 } };
 
 function build(prisma = buildPrisma(), idempotency = buildIdempotency()) {
   const shipping = { calculateRateForCourier: jest.fn().mockResolvedValue({ cost: 10000, etd: '2 days' }) };
-  const uploadTokens = { issue: jest.fn() }; // COD checkout → no token issued
+  // Phase 4A: an omitted method now defaults to BANK_TRANSFER, which issues a token.
+  const uploadTokens = { issue: jest.fn().mockResolvedValue({ uploadUrl: 'https://app/payments/upload/raw' }) };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const service = new OrdersService(prisma as any, shipping as any, idempotency as any, uploadTokens as any);
   return { service, prisma, idempotency };
@@ -133,7 +134,8 @@ describe('Checkout idempotency orchestration', () => {
         eventVersion: 1,
         exchange: 'orders',
         routingKey: 'order.created',
-        payload: { orderId: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000 },
+        // Phase 4A: the default method is BANK_TRANSFER, so a receipt-upload link rides along.
+        payload: { orderId: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, uploadUrl: 'https://app/payments/upload/raw' },
       }),
     });
     expect(outcome).toEqual({ kind: 'result', statusCode: 201, replayed: false, body: CREATED_ORDER });

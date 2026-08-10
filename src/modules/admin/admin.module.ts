@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import { LifecycleModule } from '../../infrastructure/lifecycle/lifecycle.module';
 import { OrderCancellationService } from '../orders/order-cancellation.service';
+import { PaymentSettlementModule } from '../payments/settlement/payment-settlement.module';
 import { ShipmentModule } from '../shipment/shipment.module';
 import { AdminCmsController } from './presentation/admin-cms.controller';
 import { AdminCatalogController } from './presentation/admin-catalog.controller';
@@ -19,7 +20,7 @@ import { ExecutiveDashboardService } from './executive-dashboard.service';
 import { AdminOrderNotesService } from './admin-order-notes.service';
 
 @Module({
-  imports: [ShipmentModule, LifecycleModule],
+  imports: [ShipmentModule, LifecycleModule, PaymentSettlementModule],
   controllers: [AdminCatalogController, AdminCmsController, AdminOperationsController, AdminSystemLogController, AdminQueueController, AdminIncidentController, AdminNotificationCenterController, AdminCommunicationController, AdminAuditController, AdminBellController, AdminPushController],
   providers: [AdminService, ExecutiveDashboardService, AdminOrderNotesService, OrderCancellationService, CustomerCommunicationService, PermissionGuard],
   exports: [AdminService],

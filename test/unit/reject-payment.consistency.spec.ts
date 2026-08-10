@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { AdminService } from '../../src/modules/admin/admin.service';
+import { PaymentSettlementService } from '../../src/modules/payments/settlement/payment-settlement.service';
 import { OrderCancellationService } from '../../src/modules/orders/order-cancellation.service';
 
 const PAYMENT = { id: 'pay-1', orderId: 'order-1', status: 'WAITING_VERIFICATION', deletedAt: null };
@@ -18,6 +19,9 @@ function buildTx(opts: Opts = {}) {
     payment: {
       updateMany: jest.fn().mockResolvedValue({ count: paymentFlip }),
       findUnique: jest.fn().mockResolvedValue(REFRESHED),
+      // Phase 5E: the FAILED transition moved into PaymentSettlementService, which
+      // re-reads the row after its CAS. Assertions below are unchanged.
+      findUniqueOrThrow: jest.fn().mockResolvedValue(REFRESHED),
     },
     order: { updateMany: jest.fn().mockResolvedValue({ count: orderCancel }) },
     orderItem: { findMany: jest.fn().mockResolvedValue(items) },
@@ -37,7 +41,12 @@ function build(opts: Opts = {}, payment: unknown = PAYMENT) {
     $transaction: jest.fn().mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb(tx)),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const service = new AdminService(prisma as any, new OrderCancellationService());
+  const cancellation = new OrderCancellationService();
+  const service = new AdminService(
+    prisma as any, cancellation, undefined, undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    new PaymentSettlementService(prisma as any, undefined, undefined, cancellation) as any,
+  );
   return { service, prisma, tx };
 }
 

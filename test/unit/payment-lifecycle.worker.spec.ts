@@ -36,12 +36,20 @@ function payment(over: Record<string, unknown> = {}) {
 
 function build(config = cfg()) {
   const tx = {
-    payment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    // Phase 5E: the EXPIRED transition moved into PaymentSettlementService, which
+    // re-reads the row after its CAS. The assertions below are unchanged.
+    payment: {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findUniqueOrThrow: jest.fn().mockImplementation(async () => payment({ status: 'EXPIRED' })),
+    },
     outboxEvent: { create: jest.fn().mockResolvedValue({}) },
     notificationOutbox: { create: jest.fn().mockResolvedValue({}) },
   };
   const prisma = {
-    payment: { findMany: jest.fn().mockResolvedValue([]) },
+    payment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockImplementation(async () => payment()),
+    },
     order: { findUnique: jest.fn().mockResolvedValue(ORDER) },
     $transaction: jest.fn().mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb(tx)),
     __tx: tx,

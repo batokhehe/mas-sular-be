@@ -107,15 +107,16 @@ describe('Checkout — BANK_TRANSFER unique code', () => {
     expect(data.payment.create.uniqueCode).toBeNull();
   });
 
-  it('COD has no unique code (amount unchanged, uniqueCode null)', async () => {
+  // Phase 4A: COD is no longer selectable, so it never reaches unique-code allocation.
+  it('COD is rejected outright — no allocation, no order', async () => {
     const uc = enabledCode(123);
     const { service, prisma } = build(uc);
-    await service.checkout(USER, dto({ payment_method: PaymentMethod.COD }));
+    await expect(service.checkout(USER, dto({ payment_method: PaymentMethod.COD }))).rejects.toThrow(
+      /no longer available/,
+    );
 
     expect(uc.allocateInTx).not.toHaveBeenCalled();
-    const data = orderCreateData(prisma);
-    expect(data.totalPrice).toBe(BASE_AMOUNT);
-    expect(data.payment.create.uniqueCode).toBeNull();
+    expect(prisma.__tx.order.create).not.toHaveBeenCalled();
   });
 
   it('disabled config behaves exactly like the old implementation (no code, amount = base)', async () => {

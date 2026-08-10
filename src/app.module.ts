@@ -26,6 +26,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { CmsModule } from './modules/cms/cms.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { PaymentGatewayModule } from './modules/payments/gateway/payment-gateway.module';
 import { PaymentAccountsModule } from './modules/payment-accounts/payment-accounts.module';
 import { PaymentLifecycleModule } from './modules/payments/payment-lifecycle.module';
 import { ShippingModule } from './modules/shipping/shipping.module';
@@ -75,6 +76,7 @@ import { UploadModule } from './modules/upload/upload.module';
     CartModule,
     OrdersModule,
     PaymentsModule,
+    PaymentGatewayModule,
     PaymentAccountsModule,
     PaymentLifecycleModule,
     ShippingModule,

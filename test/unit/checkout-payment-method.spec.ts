@@ -79,16 +79,16 @@ function orderCreatedPayload(prisma: ReturnType<typeof buildPrisma>) {
 }
 
 describe('Checkout — payment method persistence', () => {
-  it('defaults to COD on both Order and Payment when omitted', async () => {
+  // Phase 4A: the omitted-method default moved from COD to manual bank transfer.
+  it('defaults to BANK_TRANSFER on both Order and Payment when omitted', async () => {
     const { service, prisma } = build();
     await service.checkout(USER, dto());
     const data = orderCreateData(prisma);
-    expect(data.paymentMethod).toBe(PaymentMethod.COD);
-    expect(data.payment.create.method).toBe(PaymentMethod.COD);
+    expect(data.paymentMethod).toBe(PaymentMethod.BANK_TRANSFER);
+    expect(data.payment.create.method).toBe(PaymentMethod.BANK_TRANSFER);
   });
 
   it.each([
-    PaymentMethod.COD,
     PaymentMethod.BANK_TRANSFER,
     PaymentMethod.QRIS,
     PaymentMethod.GATEWAY, // future
@@ -104,11 +104,14 @@ describe('Checkout — payment method persistence', () => {
 });
 
 describe('Checkout — upload token issuance', () => {
-  it('COD: issues no token and emits order.created without an uploadUrl', async () => {
+  // Phase 4A: COD can no longer be created, so there is no COD token path left.
+  it('COD is rejected before any order is written', async () => {
     const { service, prisma, uploadTokens } = build();
-    await service.checkout(USER, dto({ payment_method: PaymentMethod.COD }));
+    await expect(service.checkout(USER, dto({ payment_method: PaymentMethod.COD }))).rejects.toThrow(
+      /no longer available/,
+    );
+    expect(prisma.__tx.order.create).not.toHaveBeenCalled();
     expect(uploadTokens.issue).not.toHaveBeenCalled();
-    expect(orderCreatedPayload(prisma).uploadUrl).toBeUndefined();
   });
 
   it.each([PaymentMethod.BANK_TRANSFER, PaymentMethod.QRIS])(

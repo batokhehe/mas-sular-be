@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { CoverageType, OrderStatus, PaymentMethod, PaymentStatus, Prisma, Product, Promo, Topping, VoucherType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { IdempotencyService, SupersededError } from '../../infrastructure/idempotency/idempotency.service';
@@ -19,6 +19,10 @@ import {
 } from './application/dto/create-order.dto';
 import { generateOrderNumber, isOrderNumberConflict } from './order-number.util';
 import { buildOutboxEvent } from '../../infrastructure/outbox/outbox-event.builder';
+import { PaymentInitiationService } from '../payments/gateway/payment-initiation.service';
+import { PaymentChannelRegistry } from '../payments/gateway/payment-channel.registry';
+import { buildCheckoutGatewayPayload } from '../payments/gateway/domain/payment-instruction.builder';
+import { DEFAULT_PAYMENT_METHOD, isSelectablePaymentMethod, selectablePaymentMethods } from '../payments/gateway/domain/payment-channel';
 
 type NormalizedCheckoutItem = {
   productId: string;
@@ -58,6 +62,8 @@ const ORDER_CHECKOUT_INCLUDE = {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger('OrdersService');
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly shipping: ShippingService,
@@ -75,6 +81,10 @@ export class OrdersService {
     // Optional: when present (and enabled), manual BANK_TRANSFER orders get a random
     // unique code folded into the amount. Absent → legacy behavior (no code).
     @Optional() private readonly uniqueCode?: PaymentUniqueCodeService,
+    // Optional: opens the gateway charge AFTER the checkout transaction commits.
+    // Absent (tests / gateway module removed) → checkout behaves exactly as before.
+    @Optional() private readonly paymentInitiation?: PaymentInitiationService,
+    @Optional() private readonly paymentChannels?: PaymentChannelRegistry,
   ) {}
 
   /**
@@ -546,12 +556,59 @@ export class OrdersService {
     idempotencyRecordId: string | null,
     fenceToken: number | null,
   ) {
+    this.assertSelectablePaymentMethod(dto.payment_method);
     const items = this.normalizeItems(dto.items);
     const { products, toppings } = await this.getCartPricing(items);
     this.assertStock(items, products);
     const summary = await this.getSummary(userId, dto);
 
-    return this.persistOrderWithRetry({ userId, dto, items, products, toppings, summary, idempotencyRecordId, fenceToken });
+    const order = await this.persistOrderWithRetry({ userId, dto, items, products, toppings, summary, idempotencyRecordId, fenceToken });
+    return this.withGatewayCharge(order, dto);
+  }
+
+  /**
+   * The ONLY gate on which payment methods may start a new order. Selectability
+   * is derived from the payment-channel registry (Phase 4A), so COD — offered by
+   * no channel — can never be created again. Historical COD orders are read-only
+   * data and are entirely unaffected.
+   */
+  private assertSelectablePaymentMethod(method?: PaymentMethod): void {
+    if (!method) return; // omitted → DEFAULT_PAYMENT_METHOD, which is selectable by construction
+    if (!isSelectablePaymentMethod(method)) {
+      throw new BadRequestException(
+        `Payment method ${method} is no longer available. Choose one of: ${selectablePaymentMethods().join(', ')}.`,
+      );
+    }
+  }
+
+  /**
+   * GATEWAY orders open their charge AFTER the checkout transaction has committed
+   * — an external HTTP call must never run inside a database transaction (the
+   * same rule the post-verify shipment booking follows).
+   *
+   * Best-effort by design: if the gateway is unreachable the ORDER STILL STANDS
+   * with a PENDING payment, exactly as a manual order would; the customer can be
+   * offered the payment page again. Non-gateway methods return untouched, so the
+   * manual flow is byte-identical.
+   */
+  private async withGatewayCharge(order: Awaited<ReturnType<OrdersService['persistOrderOnce']>>, dto: CreateOrderDto) {
+    const method = dto.payment_method ?? DEFAULT_PAYMENT_METHOD;
+    if (method !== PaymentMethod.GATEWAY) return order;
+    if (!dto.payment_channel || !this.paymentInitiation || !this.paymentChannels) return order;
+
+    const descriptor = this.paymentChannels.find(dto.payment_channel);
+    if (!descriptor) return order;
+
+    try {
+      const result = await this.paymentInitiation.initiate(order.payment!.id, dto.payment_channel);
+      // Additive block: every existing field of the order response is untouched.
+      return { ...order, ...buildCheckoutGatewayPayload(result, descriptor) };
+    } catch (err) {
+      this.logger.error(
+        `gateway charge failed for order ${order.orderNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return order; // order survives; payment stays PENDING
+    }
   }
 
   // Retry the order transaction on the astronomically-rare orderNumber unique
@@ -575,8 +632,9 @@ export class OrdersService {
     const { userId, dto, items, products, toppings, summary, idempotencyRecordId, fenceToken } = args;
     const voucher = summary.voucher;
     // Single source of truth for the method: persisted identically to the order
-    // and its payment. Defaults to COD when the client omits a selection.
-    const paymentMethod = dto.payment_method ?? PaymentMethod.COD;
+    // and its payment. Defaults to manual bank transfer when the client omits a
+    // selection (Phase 4A — COD is no longer selectable).
+    const paymentMethod = dto.payment_method ?? DEFAULT_PAYMENT_METHOD;
 
     // Accounting split: the unique code is NOT business revenue — it only identifies
     // the bank transfer. So the business total (subtotal + shipping - discount) is

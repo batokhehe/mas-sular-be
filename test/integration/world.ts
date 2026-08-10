@@ -99,7 +99,20 @@ async function boot(): Promise<IntegrationWorld> {
     uploadTokens,
     cancellation,
     new PaymentLifecycleMetrics(registry),
-    { ...loadPaymentLifecycleConfig(), enabled: true },
+    // Timing windows are PINNED, not inherited. Prisma Client injects the
+    // developer's .env into process.env when it loads, so `loadPaymentLifecycleConfig()`
+    // would pick up whatever PAYMENT_EXPIRY_MS / PAYMENT_*_REMINDER_MS that file
+    // happens to set (Phase 5H.1 §8/§11 root cause: 72h/24h there vs the 24h/12h
+    // these specs are written against). Pinning keeps the suite deterministic on any
+    // machine; it changes no production default.
+    {
+      ...loadPaymentLifecycleConfig(),
+      enabled: true,
+      expiryAfterMs: 24 * 60 * 60 * 1000,
+      gatewayExpiryAfterMs: 24 * 60 * 60 * 1000,
+      firstReminderAfterMs: 12 * 60 * 60 * 1000,
+      secondReminderAfterMs: 20 * 60 * 60 * 1000,
+    },
   )
   const admin = new AdminService(prisma, cancellation)
   const payments = new PaymentsService(prisma, uploadTokens)
