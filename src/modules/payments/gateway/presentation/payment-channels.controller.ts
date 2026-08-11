@@ -4,7 +4,7 @@ import { AuthUser, CurrentUser } from '../../../../common/decorators/current-use
 import { JwtAuthGuard } from '../../../../common/guards/jwt-auth.guard';
 import { PublicPaymentChannel } from '../domain/payment-channel';
 import { PaymentChannelRegistry } from '../payment-channel.registry';
-import { PaymentInitiationService } from '../payment-initiation.service';
+import { PaymentInitiationService, PaymentInstructionsResult } from '../payment-initiation.service';
 
 /**
  * Public payment-channel catalog for the checkout UI.
@@ -33,15 +33,21 @@ export class PaymentChannelsController {
 
   /**
    * GET /api/v1/payments/:paymentId/instructions — rebuild an OPEN gateway
-   * attempt for the payment-detail page (reload/deep link). Ownership-scoped and
-   * strictly read-only: it reads the ledger and never contacts the provider, so
-   * refreshing the page can never create a second charge. Returns
-   * `{ gateway: null }` for manual transfer, which keeps its existing pages.
+   * attempt for the payment page (reload, deep link, or "Bayar Sekarang" from the
+   * order list). Ownership-scoped and strictly read-only: it reads the ledger and
+   * never contacts the provider, so resuming can never create a second charge.
+   *
+   * `gateway` is unchanged — still null for manual transfer, which keeps its
+   * existing pages. `status` and `expired` are additive and let the page tell a
+   * settled payment apart from an expired one without a second request.
    */
   @Get(':paymentId/instructions')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  async instructions(@Param('paymentId') paymentId: string, @CurrentUser() user: AuthUser) {
-    return { gateway: await this.initiation.getInstructions(paymentId, user.sub) };
+  async instructions(
+    @Param('paymentId') paymentId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<PaymentInstructionsResult> {
+    return this.initiation.getInstructions(paymentId, user.sub);
   }
 }

@@ -15,6 +15,24 @@ const DEFAULT_PROVIDER = 'manual';
 const TERMINAL: PaymentStatus[] = [PaymentStatus.PAID, PaymentStatus.FAILED, PaymentStatus.EXPIRED, PaymentStatus.REFUNDED];
 
 /**
+ * What `getInstructions` hands back. `gateway` keeps its exact previous meaning
+ * and nullability; `status` and `expired` are ADDITIVE, so no existing consumer
+ * of `{ gateway }` breaks.
+ *
+ * The storefront needs both extras: with the payability gates below, `gateway`
+ * is null for a settled payment AND for a manual transfer AND for an expired
+ * attempt, and those three must not render the same screen.
+ */
+export interface PaymentInstructionsResult {
+  /** The payable attempt, or null when this payment can no longer be paid. */
+  gateway: CheckoutGatewayPayload | null;
+  /** Authoritative payment status. The storefront polls THIS, never the gateway. */
+  status: PaymentStatus;
+  /** The stored attempt exists but its provider-declared expiry has passed. */
+  expired: boolean;
+}
+
+/**
  * The single seam between business code and payment providers.
  *
  * Phase 2 flow: validate payment → resolve channel → open a PENDING ledger row →
@@ -139,23 +157,51 @@ export class PaymentInitiationService {
 
   /**
    * Rebuild the payment instructions for an OPEN attempt from the ledger — used
-   * by the payment-detail page on load/refresh. Read-only: no provider call, so
-   * refreshing can never open a second charge. Ownership-scoped (generic 404).
+   * by the payment-detail page on load/refresh AND by "Bayar Sekarang" on the
+   * order list. Read-only: no provider call, so resuming can never open a second
+   * charge. Ownership-scoped (generic 404).
+   *
+   * Payability is decided HERE, on the server. The countdown the customer sees is
+   * presentation only and a tab can sit open indefinitely, so neither the expiry
+   * nor the payment status may be trusted from the client.
    */
-  async getInstructions(paymentId: string, userId: string): Promise<CheckoutGatewayPayload | null> {
+  async getInstructions(paymentId: string, userId: string): Promise<PaymentInstructionsResult> {
     const owned = await this.prisma.payment.findFirst({
       where: { id: paymentId, deletedAt: null, order: { userId } },
-      select: { id: true },
+      select: { id: true, status: true },
     });
+    // Generic 404 whether the payment is absent or owned by someone else — the
+    // response must never reveal that another customer's payment exists.
     if (!owned) throw new NotFoundException('Payment not found');
 
+    const notPayable = (expired: boolean): PaymentInstructionsResult => ({
+      gateway: null,
+      status: owned.status,
+      expired,
+    });
+
+    // Gate 1 — only a PENDING payment is payable. A PAID payment must NEVER hand
+    // back a scannable QR: the customer would pay a second time for an order that
+    // is already settled, and nothing downstream would reconcile it.
+    if (owned.status !== PaymentStatus.PENDING) return notPayable(false);
+
     const attempt = await this.ledger.findLatestByPayment(paymentId);
-    if (!attempt) return null; // manual transfer or never initiated
+    if (!attempt) return notPayable(false); // manual transfer or never initiated
+
+    // Gate 2 — the provider-declared deadline, compared against SERVER time. The
+    // attempt is dead the moment it passes, whether or not the lifecycle worker
+    // has flipped Payment.status yet. A null expiry means the channel has no
+    // deadline, which is not the same as "expired".
+    if (attempt.expiryAt && attempt.expiryAt.getTime() <= Date.now()) return notPayable(true);
 
     const descriptor = this.channels.find(attempt.channelCode);
-    if (!descriptor) return null;
+    if (!descriptor) return notPayable(false);
 
-    return buildGatewayPayloadFromLedger(attempt, descriptor);
+    return {
+      gateway: buildGatewayPayloadFromLedger(attempt, descriptor),
+      status: owned.status,
+      expired: false,
+    };
   }
 
   /** Read the authoritative status from whichever provider owns this payment. */
