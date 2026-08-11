@@ -353,3 +353,39 @@ describe('factory resolution', () => {
     expect(() => registry.resolve('QRIS')).toThrow();
   });
 });
+
+// ============ 5H.4: MIDTRANS_BASE_URL is the single source of the endpoint ====
+
+describe('every Core API request is built from the configured base URL', () => {
+  const CUSTOM: MidtransConfig = { ...CONFIG, baseUrl: 'https://gateway-proxy.internal/midtrans' };
+
+  it('charge uses the configured base, not a compiled-in host', async () => {
+    const { p, calls } = provider([{ status: 201, body: pending({ qr_string: 'QR' }) }], CUSTOM);
+    await p.createCharge({ ...REQUEST, channel: 'QRIS' });
+
+    expect(calls[0].url).toBe('https://gateway-proxy.internal/midtrans/v2/charge');
+    expect(calls[0].url).not.toContain('midtrans.com');
+  });
+
+  it('status, cancel and expire all follow the same base', async () => {
+    const ref = { paymentId: 'pay-1', providerReference: 'BMS-1-a1b2c3d4' };
+
+    const status = provider([{ status: 200, body: pending() }], CUSTOM);
+    await status.p.getStatus(ref);
+    expect(status.calls[0].url).toBe('https://gateway-proxy.internal/midtrans/v2/BMS-1-a1b2c3d4/status');
+
+    const cancel = provider([{ status: 200, body: pending({ transaction_status: 'cancel' }) }], CUSTOM);
+    await cancel.p.cancel(ref);
+    expect(cancel.calls[0].url).toBe('https://gateway-proxy.internal/midtrans/v2/BMS-1-a1b2c3d4/cancel');
+
+    const expire = provider([{ status: 200, body: pending({ transaction_status: 'expire' }) }], CUSTOM);
+    await expire.p.expireCharge!(ref);
+    expect(expire.calls[0].url).toBe('https://gateway-proxy.internal/midtrans/v2/BMS-1-a1b2c3d4/expire');
+  });
+
+  it('a trailing slash on the configured base does not double up', () => {
+    // loadMidtransConfig strips it, so the joined path stays well-formed.
+    expect(loadMidtransConfig({ MIDTRANS_BASE_URL: 'https://proxy.internal/mt/' } as never).baseUrl)
+      .toBe('https://proxy.internal/mt');
+  });
+});

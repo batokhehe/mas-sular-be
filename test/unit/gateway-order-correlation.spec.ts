@@ -211,3 +211,71 @@ describe('Phase 5A — indexed correlation lookup', () => {
     await expect(service.findByProviderOrderId('midtrans', 'NOPE')).resolves.toBeNull();
   });
 });
+
+// ================== 5H.2 §11-J: a gateway failure must not corrupt checkout ==
+
+describe('a failed Core API charge leaves the order intact', () => {
+  function failingInitiation(error: Error) {
+    const provider = {
+      name: 'midtrans',
+      supportedChannels: () => ['QRIS' as const],
+      createCharge: jest.fn(async () => { throw error; }),
+      getStatus: jest.fn(),
+      cancel: jest.fn(),
+      mapStatus: () => PaymentStatus.PENDING,
+    };
+    const factory = new PaymentProviderFactory([provider as never]);
+    const registry = new PaymentChannelRegistry(factory);
+    const prisma = {
+      payment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'pay-1', orderId: 'o-1', method: PaymentMethod.GATEWAY,
+          status: PaymentStatus.PENDING, amount: 130000,
+          order: { orderNumber: 'BMS-FAIL-1', user: { name: 'Budi', email: null, phone: null } },
+        }),
+        // Present so an accidental mutation would be visible in the assertions.
+        update: jest.fn(), updateMany: jest.fn(), delete: jest.fn(),
+      },
+      order: { update: jest.fn(), updateMany: jest.fn(), delete: jest.fn() },
+    };
+    const ledger = {
+      createPendingTransaction: jest.fn().mockResolvedValue({ id: 'attempt-fail' }),
+      updateGatewayResponse: jest.fn(),
+      markFailed: jest.fn().mockResolvedValue(undefined),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const service = new PaymentInitiationService(prisma as any, registry, factory, ledger as any);
+    return { service, ledger, prisma, provider };
+  }
+
+  it('marks the attempt FAILED, rethrows untouched, and mutates no order or payment', async () => {
+    const boom = new Error('midtrans status_code 402: Payment channel is not activated.');
+    const { service, ledger, prisma } = failingInitiation(boom);
+
+    // The caller's error contract is unchanged — the same error propagates.
+    await expect(service.initiate('pay-1', 'QRIS')).rejects.toBe(boom);
+
+    // The attempt is recorded as failed…
+    expect(ledger.markFailed).toHaveBeenCalledWith('attempt-fail', boom.message);
+    // …and nothing writes the provider response.
+    expect(ledger.updateGatewayResponse).not.toHaveBeenCalled();
+
+    // The already-created order and payment are never rolled back or deleted:
+    // checkout committed them before the charge was attempted.
+    expect(prisma.order.update).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    expect(prisma.order.delete).not.toHaveBeenCalled();
+    expect(prisma.payment.update).not.toHaveBeenCalled();
+    expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(prisma.payment.delete).not.toHaveBeenCalled();
+  });
+
+  it('a failure to record the failure still rethrows the original error', async () => {
+    const boom = new Error('gateway timeout');
+    const { service, ledger } = failingInitiation(boom);
+    ledger.markFailed.mockRejectedValue(new Error('ledger unavailable'));
+
+    // The bookkeeping problem must never mask the real cause for the caller.
+    await expect(service.initiate('pay-1', 'QRIS')).rejects.toBe(boom);
+  });
+});

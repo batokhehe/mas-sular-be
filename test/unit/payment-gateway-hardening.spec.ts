@@ -394,6 +394,95 @@ describe('5I-1 the provider host must serve the Core API it calls', () => {
   });
 });
 
+// ====================== 5H.2 environment / URL configuration hardening =======
+
+describe('5H.2 the environment cannot silently point at production', () => {
+  const { assertMidtransConfigured } = jest.requireActual<
+    typeof import('../../src/modules/payments/gateway/midtrans.config')
+  >('../../src/modules/payments/gateway/midtrans.config');
+
+  const cfg = (over: Partial<MidtransConfig>): MidtransConfig => ({
+    enabled: true, serverKey: 'SB-Mid-server-TEST', clientKey: 'ck',
+    isProduction: false, baseUrl: 'https://api.sandbox.midtrans.com',
+    timeoutMs: 10_000, maxRetry: 2, ...over,
+  });
+
+  it('refuses a PRODUCTION endpoint while MIDTRANS_IS_PRODUCTION=false (§11-C)', () => {
+    // The dangerous direction: believing you are in sandbox while charging real cards.
+    expect(() => assertMidtransConfigured(cfg({ baseUrl: 'https://api.midtrans.com' })))
+      .toThrow(/IS_PRODUCTION=false but MIDTRANS_BASE_URL points at the production gateway/);
+    expect(() => assertMidtransConfigured(cfg({ baseUrl: 'https://app.midtrans.com' }))).toThrow();
+  });
+
+  it('still refuses a SANDBOX endpoint while MIDTRANS_IS_PRODUCTION=true', () => {
+    expect(() => assertMidtransConfigured(cfg({ isProduction: true, baseUrl: 'https://api.sandbox.midtrans.com' })))
+      .toThrow(/points at the sandbox/);
+  });
+
+  it('accepts the matching pairs, and a private proxy host in sandbox mode', () => {
+    expect(() => assertMidtransConfigured(cfg({}))).not.toThrow();
+    expect(() => assertMidtransConfigured(cfg({ isProduction: true, baseUrl: 'https://api.midtrans.com' }))).not.toThrow();
+    // A staging proxy is not a midtrans.com live host, so it stays allowed.
+    expect(() => assertMidtransConfigured(cfg({ baseUrl: 'https://gateway-proxy.internal' }))).not.toThrow();
+  });
+
+  it('a disabled gateway asserts nothing at all', () => {
+    expect(() => assertMidtransConfigured(cfg({ enabled: false, serverKey: undefined }))).not.toThrow();
+  });
+});
+
+describe('5H.2 no Midtrans endpoint is hardcoded outside configuration (§11-D)', () => {
+  const read = (rel: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    (require('fs') as typeof import('fs')).readFileSync(require('path').join(__dirname, '..', '..', rel), 'utf8');
+
+  it('the provider and HTTP client contain no midtrans.com URL', () => {
+    for (const file of [
+      'src/modules/payments/gateway/infrastructure/providers/midtrans-payment.provider.ts',
+      'src/modules/payments/gateway/infrastructure/http/midtrans-http.client.ts',
+    ]) {
+      expect(read(file)).not.toMatch(/https?:\/\/[^\s'"`]*midtrans\.com/);
+    }
+  });
+
+  it('the provider builds every URL from the injected config base', () => {
+    const src = read('src/modules/payments/gateway/infrastructure/providers/midtrans-payment.provider.ts');
+    expect(src).toContain('${this.config.baseUrl}${path}');
+  });
+
+  it('no payment source hardcodes a deployment domain (§9/§10)', () => {
+    for (const file of [
+      'src/modules/payments/gateway/infrastructure/providers/midtrans-payment.provider.ts',
+      'src/modules/payments/gateway/payment-initiation.service.ts',
+      'src/modules/payments/gateway/presentation/payment-webhook.controller.ts',
+    ]) {
+      const src = read(file);
+      expect(src).not.toContain('baksomassular.com');
+      expect(src).not.toContain('localhost:');
+    }
+  });
+});
+
+describe('5H.2 the webhook URL is environment-derived (§11-E)', () => {
+  it('APP_URL is a required, validated URL', async () => {
+    const { validateEnv } = await import('../../src/common/config/env.validation');
+    expect(() => validateEnv({ ...process.env, APP_URL: 'not-a-url' })).toThrow();
+  });
+
+  it('the route contributes only its path — the origin comes from APP_URL + prefix + version', () => {
+    const controller = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'src/modules/payments/gateway/presentation/payment-webhook.controller.ts'),
+      'utf8',
+    );
+    // Route declares `payments` + `webhook/midtrans` and version '1'; main.ts supplies
+    // the global prefix (API_PREFIX) and versioning (API_VERSION), APP_URL the origin.
+    expect(controller).toContain("path: 'payments'");
+    expect(controller).toContain("version: '1'");
+    expect(controller).toContain("@Post('webhook/midtrans')");
+    expect(controller).not.toMatch(/https?:\/\//);
+  });
+});
+
 // ================================ 5G-1 settlement DI wiring regression =======
 
 /**

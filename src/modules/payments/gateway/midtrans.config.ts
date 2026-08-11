@@ -66,4 +66,20 @@ export function assertMidtransConfigured(config: MidtransConfig): void {
   if (config.isProduction && config.baseUrl.includes('sandbox')) {
     throw new Error('MIDTRANS_IS_PRODUCTION=true but MIDTRANS_BASE_URL points at the sandbox');
   }
+  // The dangerous inverse, previously unguarded (Phase 5H.2): believing you are in
+  // sandbox while an explicit MIDTRANS_BASE_URL points at the LIVE gateway would
+  // charge real cards. Only the sandbox host is acceptable when isProduction=false;
+  // a private proxy/staging host is still allowed, a midtrans.com live host is not.
+  if (!config.isProduction && /(^|\.)midtrans\.com/.test(hostOf(config.baseUrl)) && !config.baseUrl.includes('sandbox')) {
+    throw new Error('MIDTRANS_IS_PRODUCTION=false but MIDTRANS_BASE_URL points at the production gateway');
+  }
+}
+
+/** Host of a URL, or the raw value when it is not parseable (validation elsewhere). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }

@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Post, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, HttpCode, Post, ValidationPipe } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags } from '@nestjs/swagger';
 import { MidtransWebhookDto } from '../application/dto/midtrans-webhook.dto';
@@ -44,16 +44,34 @@ export class PaymentWebhookController {
   @Post('webhook/midtrans')
   @HttpCode(200)
   @SkipThrottle()
-  @UsePipes(
-    new ValidationPipe({
-      whitelist: false,
-      forbidNonWhitelisted: false,
-      transform: true,
-      transformOptions: { enableImplicitConversion: false },
-    }),
-  )
-  async midtrans(@Body() dto: MidtransWebhookDto): Promise<WebhookAck> {
+  async midtrans(@Body() body: Record<string, unknown>): Promise<WebhookAck> {
+    // Validated EXPLICITLY, not by a route pipe (Phase 5H.3). Nest applies global
+    // pipes IN ADDITION to route-scoped ones, so main.ts's
+    // `forbidNonWhitelisted: true` ran first and rejected every real notification
+    // with 400 — Midtrans sends channel-specific fields (`transaction_type`,
+    // `expiry_time`, `customer_details`, `va_numbers`, `masked_card`, …) that no
+    // fixed DTO can enumerate ahead of time.
+    //
+    // Declaring the parameter as a plain object gives it the `Object` metatype,
+    // which ValidationPipe skips — so the global pipe passes the body through
+    // untouched and this call becomes the single validation authority. Every
+    // constraint still applies: the four signature-covered fields remain required,
+    // and `gross_amount` keeps the exact string Midtrans signed.
+    const dto = await WEBHOOK_VALIDATION.transform(body, { type: 'body', metatype: MidtransWebhookDto });
     await this.webhooks.handleMidtransNotification(dto);
     return { received: true, handled: false };
   }
 }
+
+/**
+ * The webhook's own validation. Tolerant of unknown provider fields
+ * (`forbidNonWhitelisted: false`) but strict about everything it declares, and
+ * with implicit conversion OFF so `gross_amount` reaches the verifier as the exact
+ * string that was signed ("40000.00" must never become 40000).
+ */
+const WEBHOOK_VALIDATION = new ValidationPipe({
+  whitelist: false,
+  forbidNonWhitelisted: false,
+  transform: true,
+  transformOptions: { enableImplicitConversion: false },
+});
