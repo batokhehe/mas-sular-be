@@ -1,5 +1,9 @@
-jest.mock('amqplib', () => ({ __esModule: true, default: { connect: jest.fn() } }));
-import amqp from 'amqplib';
+// The mock MUST mirror the real amqplib: a CommonJS module exporting `connect` at
+// the root, with NO `default`. The previous version declared `__esModule: true` and
+// a fabricated `default.connect`, which matched the (broken) default import in the
+// controller and is precisely why the runtime failure was never caught here.
+jest.mock('amqplib', () => ({ connect: jest.fn() }));
+import * as amqp from 'amqplib';
 import { HealthController } from '../../src/health.controller';
 
 const mockConnect = amqp.connect as unknown as jest.Mock;

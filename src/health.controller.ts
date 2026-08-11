@@ -2,7 +2,13 @@ import { Controller, Get, Inject, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ApiTags } from '@nestjs/swagger';
 import { Cache } from 'cache-manager';
-import amqp from 'amqplib';
+// NAMESPACE import, matching every other amqplib call site in this codebase.
+// A default import emits `amqplib_1.default.connect(...)` under `module: commonjs`
+// without `esModuleInterop`, and amqplib is CommonJS with no `default` export — so
+// it threw "Cannot read properties of undefined (reading 'connect')" before any
+// socket was opened. `allowSyntheticDefaultImports` silenced the type error but
+// changes no emit, which is why it compiled cleanly and failed only at runtime.
+import * as amqp from 'amqplib';
 import { PrismaService } from './database/prisma.service';
 import { amqpErrorInfo, describeAmqpTarget } from './common/diagnostics/amqp-redact';
 
