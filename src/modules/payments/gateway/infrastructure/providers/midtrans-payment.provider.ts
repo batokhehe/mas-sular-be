@@ -161,6 +161,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
     const key = this.requireProviderKey(ref, 'status');
     const response = await this.send<MidtransChargeResponse>('GET', `/v2/${encodeURIComponent(key)}/status`, undefined, {
       logBase: { op: 'status', key },
+      expectTransaction: true,
     });
     return this.toProviderStatus(response, key);
   }
@@ -170,6 +171,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
     const key = this.requireProviderKey(ref, 'cancel');
     const response = await this.send<MidtransChargeResponse>('POST', `/v2/${encodeURIComponent(key)}/cancel`, undefined, {
       logBase: { op: 'cancel', key },
+      expectTransaction: true,
     });
     return this.toProviderStatus(response, key);
   }
@@ -179,6 +181,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
     const key = this.requireProviderKey(ref, 'expire');
     const response = await this.send<MidtransChargeResponse>('POST', `/v2/${encodeURIComponent(key)}/expire`, undefined, {
       logBase: { op: 'expire', key },
+      expectTransaction: true,
     });
     return this.toProviderStatus(response, key);
   }
@@ -193,7 +196,12 @@ export class MidtransPaymentProvider implements PaymentProvider {
     method: 'GET' | 'POST',
     path: string,
     body: unknown,
-    opts: { idempotencyKey?: string; logBase: Record<string, unknown> },
+    opts: {
+      idempotencyKey?: string;
+      logBase: Record<string, unknown>;
+      /** Transaction-state endpoints (status/cancel/expire) must answer with one. */
+      expectTransaction?: boolean;
+    },
   ): Promise<T> {
     if (!this.config.serverKey) {
       throw new PermanentGatewayError('MIDTRANS_SERVER_KEY is not configured', this.name);
@@ -221,19 +229,50 @@ export class MidtransPaymentProvider implements PaymentProvider {
       logBase: { provider: this.name, ...opts.logBase },
     });
 
-    this.assertBodyOk(response);
+    this.assertBodyOk(response, opts.expectTransaction === true);
     return response;
   }
 
   /**
-   * Midtrans can answer HTTP 200 while reporting a 4xx/5xx in `status_code`.
-   * Treat that as permanent — the charge was rejected, retrying repeats it.
+   * Midtrans answers HTTP 200 for both outcomes and overloads `status_code`
+   * DIFFERENTLY PER ENDPOINT:
+   *
+   *   charge  → `status_code` is the REQUEST outcome. 4xx/5xx means the charge was
+   *             rejected; retrying just repeats it, so it is permanent.
+   *   status  → `status_code` carries the TRANSACTION STATE. An expired charge
+   *             comes back as `status_code 407` with
+   *             `status_message "Success, transaction is found"` and
+   *             `transaction_status "expire"` — a SUCCESSFUL lookup of a
+   *             non-successful transaction, not a failed request.
+   *
+   * Classifying that 407 as a transport failure meant `transaction_status` was
+   * never read, so the webhook 503'd and NO gateway payment could ever reach
+   * EXPIRED — via the webhook or the reconciliation worker (Phase 5J.6).
+   *
+   * The rule: a body carrying `transaction_status` is a completed lookup, whatever
+   * its `status_code` — hand it to the mapper. Only a body WITHOUT one can be a
+   * request failure, and that is where the original 4xx/5xx check still applies.
    */
-  private assertBodyOk(response: unknown): void {
-    const code = (response as MidtransChargeResponse)?.status_code;
+  private assertBodyOk(response: unknown, expectTransaction: boolean): void {
+    const body = response as MidtransChargeResponse | undefined;
+    const code = body?.status_code;
+
+    // The transaction state is the authoritative signal. `mapMidtransStatus`
+    // already owns every state → PaymentStatus decision, including expire/deny.
+    if (typeof body?.transaction_status === 'string' && body.transaction_status.length > 0) return;
+
     if (typeof code === 'string' && /^[45]/.test(code)) {
-      const message = (response as MidtransChargeResponse).status_message ?? 'rejected';
-      throw new PermanentGatewayError(`midtrans status_code ${code}: ${message}`, this.name);
+      throw new PermanentGatewayError(`midtrans status_code ${code}: ${body?.status_message ?? 'rejected'}`, this.name);
+    }
+
+    // A status/cancel/expire call MUST answer with a transaction state. A 2xx body
+    // without one is malformed and must NOT fall through to the mapper's default
+    // (PENDING) — that would silently invent a state we never received.
+    if (expectTransaction) {
+      throw new PermanentGatewayError(
+        `midtrans response has no transaction_status${code ? ` (status_code ${code})` : ''}`,
+        this.name,
+      );
     }
   }
 
