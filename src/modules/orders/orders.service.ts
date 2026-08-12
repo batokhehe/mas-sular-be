@@ -832,11 +832,54 @@ export class OrdersService {
     return order;
   }
 
-  listForUser(userId: string, status?: string) {
-    return this.prisma.order.findMany({
+  /**
+   * The customer's own orders.
+   *
+   * `payment` keeps every field it returned before (`include` selects all Payment
+   * scalars), plus ONE additive summary: `payment.gateway`, the latest gateway
+   * attempt's deadline and state. The storefront needs it to stop offering "Bayar
+   * Sekarang" for an attempt that already died — Payment.status stays PENDING
+   * until the provider's expire notification arrives, which can lag by hours.
+   *
+   * Deliberately a NARROW `select`: this is a list endpoint, so anything exposed
+   * here is multiplied across every order. The QR payload, VA number, provider
+   * ids and raw provider bodies stay out, as does the provider NAME — customers
+   * never see which gateway is in use.
+   *
+   * One batched query, no N+1: the nested read is index-backed by
+   * `@@index([paymentId, createdAt])`.
+   */
+  async listForUser(userId: string, status?: string) {
+    const orders = await this.prisma.order.findMany({
       where: { userId, deletedAt: null, status: status as never },
-      include: { items: { include: { toppings: true } }, address: true, payment: true, shipment: true },
+      include: {
+        items: { include: { toppings: true } },
+        address: true,
+        payment: {
+          include: {
+            gatewayTransactions: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+              select: { expiryAt: true, status: true },
+            },
+          },
+        },
+        shipment: true,
+      },
       orderBy: { createdAt: 'desc' },
+    });
+
+    // Present the latest attempt as `payment.gateway`; the relation name and its
+    // array shape are an internal detail the frontend should not depend on.
+    return orders.map(({ payment, ...order }) => {
+      if (!payment) return { ...order, payment: null };
+      const { gatewayTransactions, ...rest } = payment;
+      const latest = gatewayTransactions[0];
+      // Rebuild the summary field by field rather than spreading the row: the
+      // narrow `select` above already limits it, but widening that clause later
+      // must not silently start publishing provider data to every order.
+      const gateway = latest ? { expiryAt: latest.expiryAt, status: latest.status } : null;
+      return { ...order, payment: { ...rest, gateway } };
     });
   }
 }
