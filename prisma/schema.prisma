@@ -357,6 +357,15 @@ model Product {
   rating        Decimal                @default(0) @db.Decimal(3, 2)
   reviewCount   Int                    @default(0)
   spicyLevel    Int?
+  // Physical attributes for courier booking. Nullable: the catalogue predates
+  // them, and a product without real measurements must fail a shipment loudly
+  // rather than ship on invented dimensions. Paxel bounds: weight 1-5000 g,
+  // each side 1-50 cm.
+  weightGram    Int?
+  lengthCm      Int?
+  widthCm       Int?
+  heightCm      Int?
+  isFragile     Boolean                @default(false)
   isBestSeller  Boolean                @default(false)
   isNew         Boolean                @default(false)
   status        ProductStatus          @default(ACTIVE)
@@ -511,6 +520,16 @@ model OrderItem {
   productName String
   unitPrice   Int
   quantity    Int
+  // Snapshot of the product's physical attributes AT ORDER TIME, for the same
+  // reason productName and unitPrice are snapshotted: shipment creation happens
+  // asynchronously after payment, so reading Product later would let an edit
+  // change the parcel of an order that is already paid for. All nullable -
+  // historical rows have none and are never backfilled with guesses.
+  weightGram  Int?
+  lengthCm    Int?
+  widthCm     Int?
+  heightCm    Int?
+  isFragile   Boolean?
   spicyLevel  Int?
   notes       String?
   order       Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)

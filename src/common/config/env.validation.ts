@@ -90,8 +90,20 @@ const baseSchema = z
     PAXEL_ENABLED: boolFlag,
     PAXEL_BASE_URL: z.string().optional(),
     PAXEL_API_KEY: z.string().optional(),
+    // Signs X-Paxel-Signature on create/cancel. Required when Paxel is enabled.
+    PAXEL_API_SECRET: z.string().optional(),
+    // Merchant pickup contact sent as origin.phone (Paxel: 9-13 digits).
+    PAXEL_ORIGIN_PHONE: z.string().regex(/^\d{9,13}$/, 'PAXEL_ORIGIN_PHONE must be 9-13 digits').optional(),
+    // Pickup instruction for the courier, sent as origin.note. No default: it is
+    // a real instruction and a placeholder would be shipped as if it were true.
+    PAXEL_ORIGIN_NOTE: z.string().min(1).optional(),
+    // Paxel's need_insurance. Absent or anything but 'true' means OFF.
+    PAXEL_NEED_INSURANCE: boolFlag,
     PAXEL_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
     PAXEL_MAX_RETRY: z.coerce.number().int().nonnegative().optional(),
+    // Parcel envelope for Paxel's required `dimension` (LxWxH cm, each side 1-50).
+    // Paxel prices from it, so a bad value silently changes what customers pay.
+    PAXEL_DEFAULT_DIMENSION: z.string().regex(/^\d{1,2}x\d{1,2}x\d{1,2}$/, 'PAXEL_DEFAULT_DIMENSION must be LxWxH in cm, e.g. 30x35x20').optional(),
     JNE_ENABLED: boolFlag,
     JNE_BASE_URL: z.string().optional(),
     JNE_API_KEY: z.string().optional(),
@@ -165,6 +177,18 @@ export const envSchema = baseSchema.superRefine((env, ctx) => {
   // Shipping providers: credentials are required when the provider is enabled.
   if (env.PAXEL_ENABLED === 'true' && !env.PAXEL_API_KEY) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAXEL_API_KEY'], message: 'PAXEL_API_KEY is required when PAXEL_ENABLED=true' });
+  }
+  if (env.PAXEL_ENABLED === 'true' && !env.PAXEL_API_SECRET) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAXEL_API_SECRET'], message: 'PAXEL_API_SECRET is required when PAXEL_ENABLED=true' });
+  }
+  if (env.PAXEL_ENABLED === 'true' && !env.PAXEL_ORIGIN_PHONE) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAXEL_ORIGIN_PHONE'], message: 'PAXEL_ORIGIN_PHONE is required when PAXEL_ENABLED=true' });
+  }
+  if (env.PAXEL_ENABLED === 'true' && !env.PAXEL_ORIGIN_NOTE?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAXEL_ORIGIN_NOTE'], message: 'PAXEL_ORIGIN_NOTE is required when PAXEL_ENABLED=true' });
+  }
+  if (env.PAXEL_ENABLED === 'true' && !env.PAXEL_DEFAULT_DIMENSION) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PAXEL_DEFAULT_DIMENSION'], message: 'PAXEL_DEFAULT_DIMENSION is required when PAXEL_ENABLED=true' });
   }
   if (env.JNE_ENABLED === 'true') {
     for (const key of ['JNE_API_KEY', 'JNE_USERNAME', 'JNE_ORIGIN_CODE'] as const) {

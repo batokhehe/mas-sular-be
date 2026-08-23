@@ -4,7 +4,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { LogService } from '../../infrastructure/logging/log.service';
 import { SHIPMENT_RECONCILIATION_CONFIG, ShipmentReconciliationConfig } from './shipment-reconciliation.config';
 import { ShipmentReconciliationMetrics } from './shipment-reconciliation.metrics';
-import { BOOKING_IN_PROGRESS, ShipmentService } from './shipment.service';
+import { AWAITING_PICKUP_SCHEDULE, BOOKING_IN_PROGRESS, ShipmentService } from './shipment.service';
 
 /**
  * Recovers orders that were paid but never got a shipment booked — e.g. the process
@@ -131,6 +131,13 @@ export class ShipmentReconciliationWorker implements OnApplicationBootstrap, OnM
       const outcome = await this.shipments.createForOrderSafe(orderId);
       if (!outcome.ok && outcome.error === BOOKING_IN_PROGRESS) {
         this.logger.log({ event: 'reconciliation.skipped', orderId, reason: 'not_claimed' });
+        continue;
+      }
+      // Waiting on a person, not broken: a courier that needs an admin-selected
+      // pickup slot has no schedule yet. Skipping keeps it out of the failure
+      // metric, which would otherwise alarm on every order awaiting packing.
+      if (!outcome.ok && outcome.error === AWAITING_PICKUP_SCHEDULE) {
+        this.logger.log({ event: 'reconciliation.skipped', orderId, reason: 'awaiting_pickup_schedule' });
         continue;
       }
       if (outcome.ok) {

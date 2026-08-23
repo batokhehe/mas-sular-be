@@ -70,3 +70,71 @@ describe('InventoryAllocationService', () => {
     expect(shipping.getQuotes).toHaveBeenCalled();
   });
 });
+
+// The allocation path builds its own ShippingRateRequest, so it has to carry the
+// same master-address names as the orders path — otherwise a multi-outlet order
+// would reach Paxel without the fields it marks required.
+describe('InventoryAllocationService — address names reach the provider', () => {
+  const NAMED_ADDRESS = {
+    ...ADDRESS,
+    address: 'Jl. Pelanggan No.7',
+    province: 'Jawa Barat',
+    city: 'Kota Bandung',
+    district: 'Sukajadi',
+    village: 'Pasteur',
+  };
+
+  function namedInv(outletId: string) {
+    return {
+      productId: 'p1', outletId, stock: 10, reserved: 0, available: 10,
+      outlet: {
+        id: outletId, name: outletId, postalCode: outletId, latitude: -6.9, longitude: 107.6,
+        addressDetail: 'Jl. Outlet No.1',
+        province: { name: 'Jawa Barat' },
+        city: { name: 'Kota Bandung' },
+        district: { name: 'Coblong' },
+        village: { name: 'Dago' },
+      },
+    };
+  }
+
+  it('forwards origin and destination names on the candidate path', async () => {
+    const { service, shipping } = build([namedInv('outletA')], { outletA: 15000 });
+    await service.allocate(items, NAMED_ADDRESS, 1000);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.originCity).toBe('Kota Bandung');
+    expect(request.originDistrict).toBe('Coblong');
+    expect(request.destinationAddress).toBe('Jl. Pelanggan No.7');
+    expect(request.destinationProvince).toBe('Jawa Barat');
+    expect(request.destinationCity).toBe('Kota Bandung');
+    expect(request.destinationDistrict).toBe('Sukajadi');
+  });
+
+  it('returns the chosen outlet with its region names so the caller can re-quote', async () => {
+    const { service } = service_with_named();
+    const result = await service.allocate(items, NAMED_ADDRESS, 1000);
+    expect(result.outlet).toEqual(
+      expect.objectContaining({ city: 'Kota Bandung', district: 'Coblong', province: 'Jawa Barat' }),
+    );
+  });
+
+  function service_with_named() {
+    return build([namedInv('outletA')], { outletA: 15000 });
+  }
+
+  it('loads the region relations on the candidate query', async () => {
+    const { service, prisma } = build([namedInv('outletA')], { outletA: 15000 });
+    await service.allocate(items, NAMED_ADDRESS, 1000);
+
+    const include = prisma.productInventory.findMany.mock.calls[0][0].include;
+    expect(include.outlet.include).toEqual(
+      expect.objectContaining({
+        province: { select: { name: true } },
+        city: { select: { name: true } },
+        district: { select: { name: true } },
+        village: { select: { name: true } },
+      }),
+    );
+  });
+});

@@ -10,6 +10,11 @@ const ACTIVE_OUTLET = {
   postalCode: '40111',
   latitude: -6.9147,
   longitude: 107.6098,
+  addressDetail: 'Jl. Outlet Pusat No.1',
+  province: { name: 'Jawa Barat' },
+  city: { name: 'Kota Bandung' },
+  district: { name: 'Coblong' },
+  village: { name: 'Dago' },
 };
 
 function address(overrides: Record<string, unknown> = {}) {
@@ -24,6 +29,12 @@ function address(overrides: Record<string, unknown> = {}) {
     postalCode: '40131',
     latitude: -6.9,
     longitude: 107.6,
+    fullAddress: 'Jl. Pelanggan No.7',
+    addressDetail: 'Blok C',
+    province: { name: 'Jawa Barat' },
+    city: { name: 'Kota Bandung' },
+    district: { name: 'Sukajadi' },
+    village: { name: 'Pasteur' },
     ...overrides,
   };
 }
@@ -66,5 +77,63 @@ describe('OrdersService — real shipping request', () => {
     const { service, shipping } = build(buildPrisma(address({ postalCode: null })));
     await expect(service.getShippingOptions(USER, dto as never)).rejects.toBeInstanceOf(BadRequestException);
     expect(shipping.getQuotes).not.toHaveBeenCalled();
+  });
+});
+
+// Paxel prices on place NAMES (its /rates/city marks destination
+// address/province/city/district and origin city/district as required), so the
+// request builder has to carry them. Postal codes alone are not enough.
+describe('OrdersService — master-address names reach the provider', () => {
+  it('maps the outlet region names onto the origin', async () => {
+    const { service, shipping } = build(buildPrisma());
+    await service.getShippingOptions(USER, dto as never);
+    const request = shipping.getQuotes.mock.calls[0][0];
+
+    expect(request.originAddress).toBe('Jl. Outlet Pusat No.1');
+    expect(request.originProvince).toBe('Jawa Barat');
+    expect(request.originCity).toBe('Kota Bandung');
+    expect(request.originDistrict).toBe('Coblong');
+    expect(request.originVillage).toBe('Dago');
+  });
+
+  it('maps the customer address region names onto the destination', async () => {
+    const { service, shipping } = build(buildPrisma());
+    await service.getShippingOptions(USER, dto as never);
+    const request = shipping.getQuotes.mock.calls[0][0];
+
+    expect(request.destinationAddress).toBe('Jl. Pelanggan No.7');
+    expect(request.destinationProvince).toBe('Jawa Barat');
+    expect(request.destinationCity).toBe('Kota Bandung');
+    expect(request.destinationDistrict).toBe('Sukajadi');
+    expect(request.destinationVillage).toBe('Pasteur');
+  });
+
+  it('leaves a name undefined rather than inventing one when the relation is unset', async () => {
+    const { service, shipping } = build(buildPrisma(address({ district: null, village: null })));
+    await service.getShippingOptions(USER, dto as never);
+    const request = shipping.getQuotes.mock.calls[0][0];
+
+    expect(request.destinationDistrict).toBeUndefined();
+    expect(request.destinationVillage).toBeUndefined();
+    // never substituted with a postal code or an id
+    expect(request.destinationDistrict).not.toBe('40131');
+    expect(request.destinationDistrict).not.toBe('dist-1');
+  });
+
+  it('still loads the region relations on both queries', async () => {
+    const prisma = buildPrisma();
+    const { service } = build(prisma);
+    await service.getShippingOptions(USER, dto as never);
+
+    for (const call of [prisma.address.findFirst.mock.calls[0][0], prisma.outlet.findFirst.mock.calls[0][0]]) {
+      expect(call.include).toEqual(
+        expect.objectContaining({
+          province: { select: { name: true } },
+          city: { select: { name: true } },
+          district: { select: { name: true } },
+          village: { select: { name: true } },
+        }),
+      );
+    }
   });
 });

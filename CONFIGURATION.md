@@ -56,7 +56,11 @@ enable the async stack (`OUTBOX_RELAY_ENABLED`, `CONSUMERS_ENABLED`,
 - JWT strategies throw if their secret is missing (no insecure fallback).
 - CORS uses an explicit allowlist only — no reflect-all, no `*` with credentials.
 - `GET /health/ready` returns `not_ready` if MySQL/Redis fail, or if RabbitMQ is
-  required (relay/consumers on) but unset/unreachable.
+  required (relay/consumers on) but unset/unreachable. It answers **HTTP 503**
+  in that case and **HTTP 200** when ready, so a proxy or orchestrator can route
+  on the status code alone; the per-dependency `checks` object is returned either
+  way. `GET /health` is liveness only and always answers 200 — that, not
+  `/health/ready`, is what the container HEALTHCHECK probes.
 
 ## Remaining configuration risks
 - Async features remain **opt-in**; a minimal deploy has no events/emails unless enabled.

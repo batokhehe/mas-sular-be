@@ -2,6 +2,22 @@ export interface ShippingRateRequest {
   originPostalCode: string;
   destinationPostalCode: string;
   weightGram: number;
+  // Master-address NAMES, not ids: couriers key off human place names. Paxel's
+  // /rates/city marks destination address/province/city/district and origin
+  // city/district as required, so a provider that needs them reads them here.
+  // Optional throughout - JNE and the legacy callers never set them, and a
+  // provider that requires one must fail loudly rather than substitute a
+  // postal code (see PaxelProvider.requireAddress).
+  originAddress?: string;
+  originProvince?: string;
+  originCity?: string;
+  originDistrict?: string;
+  originVillage?: string;
+  destinationAddress?: string;
+  destinationProvince?: string;
+  destinationCity?: string;
+  destinationDistrict?: string;
+  destinationVillage?: string;
   // Real geo data from the active outlet (origin) and customer address
   // (destination). Optional so existing providers/tests remain valid; providers
   // that need coordinates read them here.

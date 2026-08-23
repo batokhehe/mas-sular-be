@@ -7,7 +7,7 @@ function config(enabled = true, maxRetry = 1, allowMockRates = false): ShippingC
   return {
     originPostalCode: '40111',
     allowMockRates,
-    paxel: { enabled: false, baseUrl: 'https://paxel.test', timeoutMs: 500, maxRetry },
+    paxel: { enabled: false, baseUrl: 'https://paxel.test', timeoutMs: 500, maxRetry, defaultDimension: '30x35x20', needInsurance: false },
     jne: {
       enabled,
       baseUrl: 'https://jne.test',

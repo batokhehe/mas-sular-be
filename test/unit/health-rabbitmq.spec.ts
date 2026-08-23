@@ -37,6 +37,27 @@ function controller(opts: { redisOk?: boolean; mysqlOk?: boolean } = {}) {
   return new HealthController(prisma as any, cache as any);
 }
 
+// Readiness answers with an HTTP STATUS CODE as well as a body (F69). These
+// tests hand the controller a minimal Express Response stand-in; `status()` is
+// the only method it touches.
+type ResStub = { code: number; status: jest.Mock };
+function mockRes(): ResStub {
+  const res: ResStub = { code: 0, status: jest.fn() };
+  res.status.mockImplementation((code: number) => {
+    res.code = code;
+    return res;
+  });
+  return res;
+}
+
+/** Invokes the readiness handler and returns both halves of its answer. */
+async function probe(opts: { redisOk?: boolean; mysqlOk?: boolean } = {}) {
+  const http = mockRes();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = await controller(opts).ready(http as any);
+  return { body, code: http.code };
+}
+
 const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
@@ -70,8 +91,9 @@ describe('RabbitMQ readiness probe', () => {
     const close = jest.fn(async () => undefined);
     connectMock.mockResolvedValue({ close });
 
-    const result = await controller().ready();
+    const { body: result, code } = await probe();
 
+    expect(code).toBe(200);
     expect(connectMock).toHaveBeenCalledTimes(1);
     expect(connectMock).toHaveBeenCalledWith(RABBIT_URL);
     // The probe owns a short-lived connection and must always close it.
@@ -83,8 +105,9 @@ describe('RabbitMQ readiness probe', () => {
   it('reports failed — not a crash — when the broker refuses the connection', async () => {
     connectMock.mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
 
-    const result = await controller().ready();
+    const { body: result, code } = await probe();
 
+    expect(code).toBe(503);
     expect(result.checks.rabbitmq).toBe('failed');
     expect(result.status).toBe('not_ready');
   });
@@ -95,8 +118,9 @@ describe('RabbitMQ readiness probe', () => {
       throw new TypeError("Cannot read properties of undefined (reading 'connect')");
     });
 
-    const result = await controller().ready();
+    const { body: result, code } = await probe();
     expect(result.checks.rabbitmq).toBe('failed'); // never crashes the endpoint
+    expect(code).toBe(503); // and it is a 503, not a 500 or a misleading 200
   });
 });
 
@@ -109,34 +133,38 @@ describe('health response semantics are unchanged', () => {
     delete process.env.CONSUMERS_ENABLED;
     connectMock.mockResolvedValue({ close: jest.fn() });
 
-    const result = await controller().ready();
+    const { body: result, code } = await probe();
 
     expect(connectMock).not.toHaveBeenCalled();
     expect(result.checks.rabbitmq).toBe('skipped');
     expect(result.status).toBe('ready'); // skipped does not block readiness
+    expect(code).toBe(200);
   });
 
   it('fails when RabbitMQ is required but no URL is configured', async () => {
     delete process.env.RABBITMQ_URL;
     process.env.OUTBOX_RELAY_ENABLED = 'true';
 
-    const result = await controller().ready();
+    const { body: result, code } = await probe();
 
     expect(result.checks.rabbitmq).toBe('failed');
     expect(result.status).toBe('not_ready');
+    expect(code).toBe(503);
   });
 
   it('still reports the other dependencies independently', async () => {
     connectMock.mockResolvedValue({ close: jest.fn() });
 
-    const mysqlDown = await controller({ mysqlOk: false }).ready();
-    expect(mysqlDown.checks.mysql).toBe('failed');
-    expect(mysqlDown.checks.rabbitmq).toBe('ok');
-    expect(mysqlDown.status).toBe('not_ready');
+    const mysqlDown = await probe({ mysqlOk: false });
+    expect(mysqlDown.body.checks.mysql).toBe('failed');
+    expect(mysqlDown.body.checks.rabbitmq).toBe('ok');
+    expect(mysqlDown.body.status).toBe('not_ready');
+    expect(mysqlDown.code).toBe(503);
 
-    const redisDown = await controller({ redisOk: false }).ready();
-    expect(redisDown.checks.redis).toBe('failed');
-    expect(redisDown.status).toBe('not_ready');
+    const redisDown = await probe({ redisOk: false });
+    expect(redisDown.body.checks.redis).toBe('failed');
+    expect(redisDown.body.status).toBe('not_ready');
+    expect(redisDown.code).toBe(503);
   });
 
   it('/health stays a static liveness answer', () => {

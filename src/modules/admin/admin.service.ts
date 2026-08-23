@@ -646,35 +646,58 @@ export class AdminService {
     return role;
   }
 
+  /**
+   * Updates a role under optimistic concurrency (C7b).
+   *
+   * The permission set is replaced wholesale, so the previous unconditional write was
+   * last-writer-wins: two administrators who opened the same role both saved
+   * successfully and the second silently discarded the first's change. Reproduced
+   * against a real database - A added a permission, B saved its stale set, A's grant
+   * was gone with no error anywhere. The dangerous direction is that a stale set can
+   * also resurrect a permission somebody just revoked.
+   *
+   * The guard is a compare-and-swap on `updatedAt`, which the schema already carries -
+   * no version column, no migration. It runs FIRST, inside the transaction: if the row
+   * no longer holds the timestamp the caller read, nothing has been deleted yet and the
+   * throw rolls the transaction back, so a conflict can never leave a half-replaced
+   * permission set.
+   *
+   * `updatedAt` is bumped explicitly rather than left to @updatedAt, because Prisma only
+   * touches it when a scalar actually changes - a permissions-only edit would otherwise
+   * leave the timestamp untouched and the next caller's stale token would still match.
+   */
   async updateRole(id: string, dto: UpdateRoleDto) {
     await this.getRole(id);
 
-    const updateData: Prisma.RoleUpdateInput = {
-      ...(dto.name ? { name: dto.name } : {}),
-      ...(dto.description !== undefined ? { description: dto.description } : {}),
-    };
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.role.updateMany({
+        where: { id, updatedAt: new Date(dto.expectedUpdatedAt) },
+        data: {
+          ...(dto.name ? { name: dto.name } : {}),
+          ...(dto.description !== undefined ? { description: dto.description } : {}),
+          updatedAt: new Date(),
+        },
+      });
 
-    if (dto.permissionIds) {
-      const [, role] = await this.prisma.$transaction([
-        this.prisma.rolePermission.deleteMany({ where: { roleId: id } }),
-        this.prisma.role.update({
-          where: { id },
-          data: {
-            ...updateData,
-            permissions: {
-              create: dto.permissionIds.map((permissionId) => ({ permissionId })),
-            },
-          },
-          include: { permissions: { include: { permission: true } } },
-        }),
-      ]);
-      return role;
-    }
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Role was modified by another administrator. Please reload and retry.',
+        );
+      }
 
-    return this.prisma.role.update({
-      where: { id },
-      data: updateData,
-      include: { permissions: { include: { permission: true } } },
+      if (dto.permissionIds) {
+        await tx.rolePermission.deleteMany({ where: { roleId: id } });
+        if (dto.permissionIds.length > 0) {
+          await tx.rolePermission.createMany({
+            data: dto.permissionIds.map((permissionId) => ({ roleId: id, permissionId })),
+          });
+        }
+      }
+
+      return tx.role.findUniqueOrThrow({
+        where: { id },
+        include: { permissions: { include: { permission: true } } },
+      });
     });
   }
 

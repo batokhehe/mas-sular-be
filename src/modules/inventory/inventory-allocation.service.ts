@@ -17,11 +17,30 @@ export interface AllocationAddress {
   postalCode: string | null;
   latitude: unknown;
   longitude: unknown;
+  // Master-address NAMES, forwarded to couriers that price on place names
+  // rather than postal codes (Paxel). Optional: coverage and scoring never
+  // read them, so existing callers stay valid.
+  address?: string | null;
+  province?: string | null;
+  city?: string | null;
+  district?: string | null;
+  village?: string | null;
+}
+
+/** Region names carried with an outlet so a rate request can be built from it. */
+export interface OutletRegionNames {
+  address?: string | null;
+  province?: string | null;
+  city?: string | null;
+  district?: string | null;
+  village?: string | null;
 }
 
 export interface AllocationResult {
   outletId: string | null;
-  outlet: { id: string; name: string; postalCode: string | null; latitude: number | null; longitude: number | null } | null;
+  outlet:
+    | ({ id: string; name: string; postalCode: string | null; latitude: number | null; longitude: number | null } & OutletRegionNames)
+    | null;
   quotes: ShippingQuote[];
   score: number;
   usedFallback: boolean;
@@ -33,6 +52,56 @@ const W = { distance: 0.4, shipping: 0.3, eta: 0.2, stock: 0.1 };
 
 function toNum(v: unknown): number | null {
   return v === null || v === undefined ? null : Number(v);
+}
+
+/** Names only; ids mean nothing to a courier and nothing else here needs the rows. */
+const OUTLET_REGION_NAMES = {
+  include: {
+    province: { select: { name: true } },
+    city: { select: { name: true } },
+    district: { select: { name: true } },
+    village: { select: { name: true } },
+  },
+} as const;
+
+interface OutletWithRegions {
+  addressDetail: string | null;
+  province?: { name: string } | null;
+  city?: { name: string } | null;
+  district?: { name: string } | null;
+  village?: { name: string } | null;
+}
+
+/** Region names for a rate request. One place, so both allocation paths agree. */
+function regionFields(outlet: OutletWithRegions, address: AllocationAddress) {
+  return {
+    originAddress: outlet.addressDetail ?? undefined,
+    originProvince: outlet.province?.name,
+    originCity: outlet.city?.name,
+    originDistrict: outlet.district?.name,
+    originVillage: outlet.village?.name,
+    destinationAddress: address.address ?? undefined,
+    destinationProvince: address.province ?? undefined,
+    destinationCity: address.city ?? undefined,
+    destinationDistrict: address.district ?? undefined,
+    destinationVillage: address.village ?? undefined,
+  };
+}
+
+/** The outlet projection returned to callers, including the names Paxel needs. */
+function outletProjection(outlet: OutletWithRegions & { id: string; name: string; postalCode: string | null; latitude: unknown; longitude: unknown }) {
+  return {
+    id: outlet.id,
+    name: outlet.name,
+    postalCode: outlet.postalCode,
+    latitude: toNum(outlet.latitude),
+    longitude: toNum(outlet.longitude),
+    address: outlet.addressDetail,
+    province: outlet.province?.name ?? null,
+    city: outlet.city?.name ?? null,
+    district: outlet.district?.name ?? null,
+    village: outlet.village?.name ?? null,
+  };
 }
 
 /** Haversine distance in km (0 when either point lacks coordinates → neutral). */
@@ -89,7 +158,7 @@ export class InventoryAllocationService {
     // and enough available stock (stock − reserved) at that outlet.
     const inventories = await this.prisma.productInventory.findMany({
       where: { productId: { in: productIds }, outlet: { isActive: true } },
-      include: { outlet: true },
+      include: { outlet: { include: OUTLET_REGION_NAMES.include } },
     });
 
     if (inventories.length === 0) {
@@ -129,6 +198,7 @@ export class InventoryAllocationService {
           originLongitude: toNum(outlet.longitude) ?? undefined,
           destinationLatitude: destLat ?? undefined,
           destinationLongitude: destLng ?? undefined,
+          ...regionFields(outlet, address),
         });
         const cheapest = [...quotes].sort((a, b) => a.shippingCost - b.shippingCost)[0];
         const remainingStock = productIds.reduce((sum, pid) => {
@@ -151,13 +221,7 @@ export class InventoryAllocationService {
     this.logger.log({ event: 'allocation.selected', outletId: best.outletId, score: best.score });
     return {
       outletId: best.outletId,
-      outlet: {
-        id: best.outlet.id,
-        name: best.outlet.name,
-        postalCode: best.outlet.postalCode,
-        latitude: toNum(best.outlet.latitude),
-        longitude: toNum(best.outlet.longitude),
-      },
+      outlet: outletProjection(best.outlet),
       quotes: best.quotes,
       score: best.score,
       usedFallback: false,
@@ -189,7 +253,10 @@ export class InventoryAllocationService {
   }
 
   private async fallbackToActiveOutlet(address: AllocationAddress, weightGram: number): Promise<AllocationResult> {
-    const outlet = await this.prisma.outlet.findFirst({ where: { isActive: true } });
+    const outlet = await this.prisma.outlet.findFirst({
+      where: { isActive: true },
+      include: OUTLET_REGION_NAMES.include,
+    });
     if (!outlet) return { outletId: null, outlet: null, quotes: [], score: 0, usedFallback: true };
     const quotes = await this.shipping.getQuotes({
       originPostalCode: outlet.postalCode ?? '',
@@ -199,16 +266,11 @@ export class InventoryAllocationService {
       originLongitude: toNum(outlet.longitude) ?? undefined,
       destinationLatitude: toNum(address.latitude) ?? undefined,
       destinationLongitude: toNum(address.longitude) ?? undefined,
+      ...regionFields(outlet, address),
     });
     return {
       outletId: outlet.id,
-      outlet: {
-        id: outlet.id,
-        name: outlet.name,
-        postalCode: outlet.postalCode,
-        latitude: toNum(outlet.latitude),
-        longitude: toNum(outlet.longitude),
-      },
+      outlet: outletProjection(outlet),
       quotes,
       score: 0,
       usedFallback: true,

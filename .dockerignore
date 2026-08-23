@@ -1,0 +1,42 @@
+# Keep the build context small and free of anything secret or host-specific.
+# NOTE: prisma/ , src/ , tsconfig*.json and package.json MUST stay included —
+# the build stage compiles from them.
+
+.git
+.gitignore
+.github
+
+node_modules
+dist
+build
+
+# Secrets — never enter an image. .env.example is documentation and harmless,
+# but there is no build-time need for it either.
+.env
+.env.*
+
+# Tests and their artifacts (the runtime image is built from dist/ only).
+test
+coverage
+*.spec.ts
+*.int-spec.ts
+*.live-spec.ts
+jest.config.*
+tsconfig.tsbuildinfo
+
+# Local runtime state that must come from a volume, never from the image.
+uploads
+logs
+tmp
+*.log
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Docker's own files
+Dockerfile
+.dockerignore
+docker-compose*.yml

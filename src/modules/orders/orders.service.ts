@@ -60,6 +60,19 @@ const ORDER_CHECKOUT_INCLUDE = {
   payment: true,
 } satisfies Prisma.OrderInclude;
 
+/**
+ * Master-address relations needed to build a courier rate request. Names only -
+ * ids are meaningless to a courier, and nothing else here needs the rows.
+ */
+const ADDRESS_REGION_NAMES = {
+  include: {
+    province: { select: { name: true } },
+    city: { select: { name: true } },
+    district: { select: { name: true } },
+    village: { select: { name: true } },
+  },
+} as const;
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger('OrdersService');
@@ -152,6 +165,12 @@ export class OrdersService {
       postalCode: string | null;
       latitude: unknown;
       longitude: unknown;
+      fullAddress?: string | null;
+      addressDetail?: string | null;
+      province?: { name: string } | null;
+      city?: { name: string } | null;
+      district?: { name: string } | null;
+      village?: { name: string } | null;
     },
     weightGram: number,
   ): Promise<ShippingRateRequest> {
@@ -165,7 +184,10 @@ export class OrdersService {
       );
     }
 
-    const outlet = await this.prisma.outlet.findFirst({ where: { isActive: true } });
+    const outlet = await this.prisma.outlet.findFirst({
+      where: { isActive: true },
+      include: ADDRESS_REGION_NAMES.include,
+    });
     const toNum = (v: unknown): number | undefined =>
       v === null || v === undefined ? undefined : Number(v);
 
@@ -178,6 +200,19 @@ export class OrdersService {
       destinationLatitude: toNum(address.latitude),
       destinationLongitude: toNum(address.longitude),
       originName: outlet?.name,
+      // Region names for couriers that price on place names rather than postal
+      // codes (Paxel). Undefined when a relation is unset - the provider decides
+      // whether it can proceed; nothing is substituted here.
+      originAddress: outlet?.addressDetail ?? undefined,
+      originProvince: outlet?.province?.name,
+      originCity: outlet?.city?.name,
+      originDistrict: outlet?.district?.name,
+      originVillage: outlet?.village?.name,
+      destinationAddress: address.fullAddress ?? address.addressDetail ?? undefined,
+      destinationProvince: address.province?.name,
+      destinationCity: address.city?.name,
+      destinationDistrict: address.district?.name,
+      destinationVillage: address.village?.name,
     };
   }
 
@@ -195,13 +230,19 @@ export class OrdersService {
       postalCode: string | null;
       latitude: unknown;
       longitude: unknown;
+      fullAddress?: string | null;
+      addressDetail?: string | null;
+      province?: { name: string } | null;
+      city?: { name: string } | null;
+      district?: { name: string } | null;
+      village?: { name: string } | null;
     },
     items: NormalizedCheckoutItem[],
     weightGram: number,
   ): Promise<{ outletId: string | null; request: ShippingRateRequest; quotes: ShippingQuote[] | null }> {
     if (this.allocation) {
       const allocItems = items.map((i) => ({ productId: i.productId, quantity: i.quantity }));
-      const result = await this.allocation.allocate(allocItems, address, weightGram);
+      const result = await this.allocation.allocate(allocItems, this.toAllocationAddress(address), weightGram);
       const outlet = result.outlet;
       const request: ShippingRateRequest = {
         originPostalCode: outlet?.postalCode ?? '',
@@ -212,11 +253,50 @@ export class OrdersService {
         destinationLatitude: this.toNumOpt(address.latitude),
         destinationLongitude: this.toNumOpt(address.longitude),
         originName: outlet?.name,
+        // Origin names come from the outlet the allocator actually picked, not
+        // from the active-outlet fallback — otherwise a multi-outlet order would
+        // be priced from the wrong origin city.
+        originAddress: outlet?.address ?? undefined,
+        originProvince: outlet?.province ?? undefined,
+        originCity: outlet?.city ?? undefined,
+        originDistrict: outlet?.district ?? undefined,
+        originVillage: outlet?.village ?? undefined,
+        destinationAddress: address.fullAddress ?? address.addressDetail ?? undefined,
+        destinationProvince: address.province?.name,
+        destinationCity: address.city?.name,
+        destinationDistrict: address.district?.name,
+        destinationVillage: address.village?.name,
       };
       return { outletId: result.outletId, request, quotes: result.quotes };
     }
     const request = await this.buildShippingRequest(address, weightGram);
     return { outletId: null, request, quotes: null };
+  }
+
+  /** Flatten the loaded master-address relations into the allocator's address shape. */
+  private toAllocationAddress(address: {
+    provinceId: string | null;
+    cityId: string | null;
+    districtId: string | null;
+    villageId: string | null;
+    postalCode: string | null;
+    latitude: unknown;
+    longitude: unknown;
+    fullAddress?: string | null;
+    addressDetail?: string | null;
+    province?: { name: string } | null;
+    city?: { name: string } | null;
+    district?: { name: string } | null;
+    village?: { name: string } | null;
+  }) {
+    return {
+      ...address,
+      address: address.fullAddress ?? address.addressDetail ?? null,
+      province: address.province?.name ?? null,
+      city: address.city?.name ?? null,
+      district: address.district?.name ?? null,
+      village: address.village?.name ?? null,
+    };
   }
 
   private toNumOpt(v: unknown): number | undefined {
@@ -332,6 +412,9 @@ export class OrdersService {
   private async assertAddress(userId: string, addressId: string) {
     const address = await this.prisma.address.findFirst({
       where: { id: addressId, userId, deletedAt: null },
+      // Region NAMES (not just ids): couriers price on human place names, and
+      // Paxel rejects a rate request without destination province/city/district.
+      include: ADDRESS_REGION_NAMES.include,
     });
     if (!address) throw new BadRequestException('Shipping address is invalid');
     return address;
@@ -706,6 +789,16 @@ export class OrdersService {
                 productName: product.name,
                 unitPrice: product.price,
                 quantity: item.quantity,
+                // Physical snapshot, taken here for the same reason productName
+                // and unitPrice are: shipment booking happens asynchronously
+                // after payment, so reading Product then would let a later edit
+                // change the parcel of an order that is already paid for.
+                // Null when the product has no measurements yet - never guessed.
+                weightGram: product.weightGram,
+                lengthCm: product.lengthCm,
+                widthCm: product.widthCm,
+                heightCm: product.heightCm,
+                isFragile: product.isFragile,
                 spicyLevel: item.spicyLevel,
                 notes: item.notes,
                 toppings: {
