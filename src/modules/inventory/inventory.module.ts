@@ -1,6 +1,5 @@
 import { Global, Module } from '@nestjs/common';
 import { ShippingModule } from '../shipping/shipping.module';
-import { DeliveryCoverageModule } from '../delivery-coverage/delivery-coverage.module';
 import { INVENTORY_RESERVATION_CONFIG, loadInventoryReservationConfig } from './inventory-reservation.config';
 import { InventoryReservationMetrics } from './inventory-reservation.metrics';
 import { InventoryReservationService } from './inventory-reservation.service';
@@ -15,9 +14,15 @@ import { InventoryAdminController } from './presentation/inventory-admin.control
  * OrdersService, AdminService, and OrderCancellationService (provided in several
  * modules) all resolve the same services via their @Optional() injection points.
  */
+/**
+ * DeliveryCoverageModule is deliberately NOT imported — see OrdersModule for the
+ * reasoning. InventoryAllocationService injects DeliveryCoverageService with
+ * @Optional(), so assertCoverage() becomes a no-op and outlet allocation no
+ * longer refuses an address before Paxel has been asked whether it can ship there.
+ */
 @Global()
 @Module({
-  imports: [ShippingModule, DeliveryCoverageModule],
+  imports: [ShippingModule],
   controllers: [InventoryReservationAdminController, InventoryAdminController],
   providers: [
     InventoryReservationService,

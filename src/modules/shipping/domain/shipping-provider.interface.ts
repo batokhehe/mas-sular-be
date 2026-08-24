@@ -1,3 +1,5 @@
+import type { PaxelBoxSize } from './paxel-box';
+
 export interface ShippingRateRequest {
   originPostalCode: string;
   destinationPostalCode: string;
@@ -26,6 +28,14 @@ export interface ShippingRateRequest {
   destinationLatitude?: number;
   destinationLongitude?: number;
   originName?: string;
+  /**
+   * The box the WHOLE ORDER ships in, chosen from TOTAL ORDER QUANTITY by
+   * `selectPaxelBox()` - never from this request's own weight/address fields,
+   * and never per-item. Optional: JNE and any caller that has not computed a
+   * box (legacy paths, existing tests) simply omit it, and PaxelProvider falls
+   * back to PAXEL_DEFAULT_DIMENSION exactly as before this field existed.
+   */
+  paxelBoxSize?: PaxelBoxSize;
 }
 
 /** Legacy single-rate shape (kept for the /shipping/rates endpoint and the
@@ -47,6 +57,14 @@ export interface ShippingQuote {
   serviceName: string; // human label, e.g. 'Paxel Same Day'
   estimatedDays: string; // human ETA, e.g. 'Today', '2-3 Days'
   shippingCost: number; // in IDR
+  /**
+   * Paxel's own `fixed_size` - the price bucket THEIR API resolved
+   * server-side from the dimension we sent. This is the PROVIDER's answer and
+   * is kept separate from our local PaxelBoxSize selection; the two are never
+   * conflated with each other. Absent for providers that don't return one
+   * (JNE) or when Paxel's response didn't include it.
+   */
+  fixedSize?: string;
 }
 
 export interface TrackingResult {

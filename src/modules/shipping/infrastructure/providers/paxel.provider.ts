@@ -13,6 +13,7 @@ import {
   PaxelServiceCode,
   paxelServiceSpec,
 } from './paxel-rate.map';
+import { paxelBoxRateDimension } from './paxel-box-dimension';
 
 const TRACK_PATH = '/shipments';
 
@@ -43,6 +44,8 @@ interface PaxelAddress {
 interface PaxelRateResponse {
   data?: {
     fixed_price?: number;
+    /** The price bucket Paxel resolved server-side. Exposed to the caller as-is. */
+    fixed_size?: string;
     time_detail?: Array<{ time_delivery_start?: string; time_delivery_end?: string }>;
   };
 }
@@ -111,7 +114,11 @@ export class PaxelProvider implements ShippingProvider {
           origin,
           destination,
           weight,
-          dimension: this.cfg.defaultDimension,
+          // PaxelBox drives this whenever the order has one (every real
+          // checkout call); PAXEL_DEFAULT_DIMENSION is the fallback for
+          // callers that have not computed a box (JNE-only paths, legacy
+          // tests) - unchanged from before this field existed.
+          dimension: request.paxelBoxSize ? paxelBoxRateDimension(request.paxelBoxSize) : this.cfg.defaultDimension,
           service_type: spec.serviceType,
         }),
         timeoutMs: this.cfg.timeoutMs,
@@ -207,6 +214,10 @@ export class PaxelProvider implements ShippingProvider {
       serviceName: label,
       estimatedDays: this.estimatedDays(parsed),
       shippingCost: Math.round(price),
+      // Paxel's own bucket, preserved as-is - never used to override or
+      // second-guess the locally-selected PaxelBoxSize. Omitted rather than
+      // sent as undefined when Paxel didn't return one.
+      ...(parsed.data?.fixed_size ? { fixedSize: parsed.data.fixed_size } : {}),
     };
   }
 

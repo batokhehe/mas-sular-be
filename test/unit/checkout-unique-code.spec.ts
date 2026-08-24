@@ -4,7 +4,7 @@ import { PaymentMethod } from '@prisma/client';
 
 // Base order value = subtotal (20000) + shipping (10000) - discount (0) = 30000.
 const USER = 'user-1';
-const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 // The mock order.create return value: payment.amount is the transfer total the
 // notification sources from (business 30000 + code 321 = 30321).
 const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260704-12345', totalPrice: 30000, items: [], payment: { id: 'pay-1', amount: 30321 } };

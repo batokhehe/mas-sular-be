@@ -6,6 +6,7 @@ import { PaymentUploadTokenService } from '../payments/payment-upload-token.serv
 import { PaymentUniqueCodeService } from '../payments/payment-unique-code.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { ShippingQuote, ShippingRateRequest } from '../shipping/domain/shipping-provider.interface';
+import { selectPaxelBox } from '../shipping/domain/paxel-box';
 import { DeliveryCoverageService } from '../delivery-coverage/delivery-coverage.service';
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import { InventoryAllocationService } from '../inventory/inventory-allocation.service';
@@ -173,6 +174,7 @@ export class OrdersService {
       village?: { name: string } | null;
     },
     weightGram: number,
+    totalQuantity: number,
   ): Promise<ShippingRateRequest> {
     const missing: string[] = [];
     if (!address.postalCode) missing.push('postal code');
@@ -200,6 +202,10 @@ export class OrdersService {
       destinationLatitude: toNum(address.latitude),
       destinationLongitude: toNum(address.longitude),
       originName: outlet?.name,
+      // The WHOLE ORDER's box, from total quantity - never per-item, never
+      // derived from weight. selectPaxelBox() is the single source of the
+      // S/M/L/XL threshold; nothing here re-implements it.
+      paxelBoxSize: selectPaxelBox(totalQuantity),
       // Region names for couriers that price on place names rather than postal
       // codes (Paxel). Undefined when a relation is unset - the provider decides
       // whether it can proceed; nothing is substituted here.
@@ -240,6 +246,11 @@ export class OrdersService {
     items: NormalizedCheckoutItem[],
     weightGram: number,
   ): Promise<{ outletId: string | null; request: ShippingRateRequest; quotes: ShippingQuote[] | null }> {
+    // SUM(OrderItem.quantity) across the whole cart — the box is one per
+    // order, never per SKU or per line. Computed once here so both branches
+    // below (allocated outlet vs. legacy active-outlet) agree.
+    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+
     if (this.allocation) {
       const allocItems = items.map((i) => ({ productId: i.productId, quantity: i.quantity }));
       const result = await this.allocation.allocate(allocItems, this.toAllocationAddress(address), weightGram);
@@ -253,6 +264,7 @@ export class OrdersService {
         destinationLatitude: this.toNumOpt(address.latitude),
         destinationLongitude: this.toNumOpt(address.longitude),
         originName: outlet?.name,
+        paxelBoxSize: selectPaxelBox(totalQuantity),
         // Origin names come from the outlet the allocator actually picked, not
         // from the active-outlet fallback — otherwise a multi-outlet order would
         // be priced from the wrong origin city.
@@ -269,7 +281,7 @@ export class OrdersService {
       };
       return { outletId: result.outletId, request, quotes: result.quotes };
     }
-    const request = await this.buildShippingRequest(address, weightGram);
+    const request = await this.buildShippingRequest(address, weightGram, totalQuantity);
     return { outletId: null, request, quotes: null };
   }
 
@@ -307,10 +319,10 @@ export class OrdersService {
   async getShippingOptions(userId: string, dto: ShippingOptionsDto): Promise<ShippingQuote[]> {
     const address = await this.assertAddress(userId, dto.address_id);
     const items = this.normalizeItems(dto.items);
-    const { totalItems } = await this.getCartPricing(items);
+    const { products } = await this.getCartPricing(items);
     // Gate: throws for DISABLED / PICKUP_ONLY so unsupported areas never see options.
     await this.resolveCoverage(address);
-    const { request, quotes } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(totalItems));
+    const { request, quotes } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(items, products));
     // Allocation already priced the chosen outlet; legacy path quotes on demand.
     return quotes ?? this.shipping.getQuotes(request);
   }
@@ -456,8 +468,47 @@ export class OrdersService {
     }
   }
 
-  private getShippingWeightGram(totalItems: number) {
-    return Math.max(1, totalItems) * 500;
+  /**
+   * Real parcel weight for a RATE request: SUM(Product.weightGram × quantity).
+   *
+   * Replaces the legacy `totalItems × 500 g` placeholder, which was wrong twice
+   * over: it charged every SKU the same 500 g regardless of what it actually
+   * weighs, and it crossed Paxel's 5000 g /rates/city cap at 11 items, silently
+   * removing SAMEDAY/NEXTDAY/REGULAR from any order that size.
+   *
+   * A product with no configured weight is REFUSED, never defaulted — falling
+   * back to 500 g is what produced a wrong quote in the first place, and a
+   * guessed weight is a price a customer would actually be charged. Product
+   * physical data is mandatory for shipping, and this surfaces that at the
+   * quote instead of hiding it until booking.
+   *
+   * This is the WEIGHT axis only. The PaxelBox dimension is selected purely
+   * from total QUANTITY (`selectPaxelBox`) and is deliberately unrelated to
+   * Product.lengthCm/widthCm/heightCm — the box is the outer carton, the
+   * product dimensions are its contents.
+   */
+  private getShippingWeightGram(items: NormalizedCheckoutItem[], products: Product[]): number {
+    const missing: string[] = [];
+    let totalWeightGram = 0;
+
+    for (const item of items) {
+      // getCartPricing already rejected any unknown/unavailable product.
+      const product = products.find((candidate) => candidate.id === item.productId)!;
+      if (product.weightGram === null || product.weightGram === undefined) {
+        if (!missing.includes(product.name)) missing.push(product.name);
+        continue;
+      }
+      totalWeightGram += product.weightGram * item.quantity;
+    }
+
+    if (missing.length) {
+      throw new BadRequestException(
+        `Shipping cannot be quoted: ${missing.join(', ')} ${missing.length === 1 ? 'has' : 'have'} no weight configured. ` +
+          `Set the product weight, then retry.`,
+      );
+    }
+
+    return totalWeightGram;
   }
 
   private normalizeEstimatedDays(etd: string) {
@@ -467,8 +518,8 @@ export class OrdersService {
   async calculateShippingCost(userId: string, dto: ShippingCostDto) {
     const address = await this.assertAddress(userId, dto.address_id);
     const items = this.normalizeItems(dto.items);
-    const { totalItems } = await this.getCartPricing(items);
-    const request = await this.buildShippingRequest(address, this.getShippingWeightGram(totalItems));
+    const { products, totalItems } = await this.getCartPricing(items);
+    const request = await this.buildShippingRequest(address, this.getShippingWeightGram(items, products), totalItems);
     const rate = await this.shipping.calculateRateForCourier(dto.courier, request);
 
     return {
@@ -509,7 +560,7 @@ export class OrdersService {
 
     // Allocate the best outlet (multi-outlet) or fall back to the active outlet;
     // shipping is priced from that outlet's origin.
-    const { outletId, request } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(totalItems));
+    const { outletId, request } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(items, products));
     const quote = await this.resolveShippingQuote(dto, request);
     const deliveryFee = quote.shippingCost;
 

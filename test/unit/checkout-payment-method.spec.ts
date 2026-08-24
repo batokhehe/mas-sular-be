@@ -3,7 +3,7 @@ import { CheckoutCourier, CreateOrderDto } from '../../src/modules/orders/applic
 import { PaymentMethod } from '@prisma/client';
 
 const USER = 'user-1';
-const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: {} };
 
 function dto(over: Partial<CreateOrderDto> = {}): CreateOrderDto {

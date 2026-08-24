@@ -138,3 +138,52 @@ describe('InventoryAllocationService — address names reach the provider', () =
     );
   });
 });
+
+// ==================================================== PaxelBox integration ==
+// PAXELBOX-3: `allocate()` builds its own ShippingRateRequest (candidate
+// scoring AND the migration fallback), so both paths must carry `paxelBoxSize`
+// independently of OrdersService — reusing selectPaxelBox(), never a second
+// copy of the S/M/L/XL thresholds.
+
+describe('InventoryAllocationService — PaxelBox reaches both request paths', () => {
+  it('candidate-scoring path: total quantity 2 -> PaxelBox S', async () => {
+    const { service, shipping } = build([inv('outletA', -6.9, 107.6, 10)], { outletA: 15000 });
+    await service.allocate(items, ADDRESS, 1000); // items = [{ productId: 'p1', quantity: 2 }]
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.paxelBoxSize).toBe('S');
+  });
+
+  it('migration-fallback path (no ProductInventory yet) also carries paxelBoxSize', async () => {
+    const { service, shipping } = build([], {});
+    await service.allocate(items, ADDRESS, 1000);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.paxelBoxSize).toBe('S');
+  });
+
+  it('sums quantity across multiple SKUs on the candidate path, not per-item', async () => {
+    // p1 x3 + p2 x6 = 9 total -> M, mirroring the same worked example
+    // OrdersService is tested against, at this independent call site.
+    const multiItems = [
+      { productId: 'p1', quantity: 3 },
+      { productId: 'p2', quantity: 6 },
+    ];
+    const invs = [
+      inv('outletA', -6.9, 107.6, 10, 0, 'p1'),
+      inv('outletA', -6.9, 107.6, 10, 0, 'p2'),
+    ];
+    const { service, shipping } = build(invs, { outletA: 15000 });
+    await service.allocate(multiItems, ADDRESS, 1000);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.paxelBoxSize).toBe('M');
+  });
+
+  it('quantity 21 on the fallback path -> PaxelBox XL', async () => {
+    const { service, shipping } = build([], {});
+    await service.allocate([{ productId: 'p1', quantity: 21 }], ADDRESS, 1000);
+
+    expect(shipping.getQuotes.mock.calls[0][0].paxelBoxSize).toBe('XL');
+  });
+});

@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { OrdersService } from '../../src/modules/orders/orders.service';
 
 const USER = 'user-1';
-const PRODUCT = { id: 'p1', name: 'Baso', price: 45000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Baso', price: 45000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 
 const ACTIVE_OUTLET = {
   id: 'outlet-1',
@@ -70,7 +70,8 @@ describe('OrdersService — real shipping request', () => {
     expect(request.destinationPostalCode).toBe('40131'); // address, not 'customer-address'
     expect(request.originLatitude).toBe(-6.9147);
     expect(request.destinationLatitude).toBe(-6.9);
-    expect(request.weightGram).toBe(2 * 500);
+    // PAXELBOX-5: real product weight, not the old `totalItems * 500g`.
+    expect(request.weightGram).toBe(2 * 250);
   });
 
   it('rejects checkout when the destination address is missing a postal code', async () => {
@@ -135,5 +136,178 @@ describe('OrdersService — master-address names reach the provider', () => {
         }),
       );
     }
+  });
+});
+
+// ==================================================== PaxelBox integration ==
+// PAXELBOX-3: the box is chosen from TOTAL ORDER QUANTITY and reaches the
+// provider as `paxelBoxSize` on the exact same request JNE/legacy callers see
+// (JNE simply ignores the field). SKU, product dimensions and weight play no
+// part in this — only SUM(OrderItem.quantity).
+
+describe('OrdersService — PaxelBox reaches the real shipping request', () => {
+  it.each([
+    [1, 'S'], [3, 'S'],
+    [4, 'M'], [10, 'M'],
+    [11, 'L'], [20, 'L'],
+    [21, 'XL'], [100, 'XL'],
+  ] as const)('total quantity %i -> PaxelBox %s on the outgoing request', async (qty, expected) => {
+    const { service, shipping } = build(buildPrisma());
+    await service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty }] } as never);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.paxelBoxSize).toBe(expected);
+  });
+
+  it('a multi-SKU cart uses the SUM of quantities, not per-line or per-SKU logic', async () => {
+    // SKU A x2 + SKU B x3 + SKU C x4 = 9 total -> PaxelBox M, exactly the
+    // worked example from the phase brief. Three different products,
+    // deliberately never inspected for size/weight/dimension.
+    const products = [
+      { id: 'pA', name: 'Baso A', price: 45000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 },
+      { id: 'pB', name: 'Baso B', price: 50000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 300 },
+      { id: 'pC', name: 'Es Teh', price: 8000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 400 },
+    ];
+    const prisma = buildPrisma();
+    prisma.product.findMany = jest.fn().mockResolvedValue(products);
+    const { service, shipping } = build(prisma);
+
+    await service.getShippingOptions(USER, {
+      address_id: 'addr-1',
+      items: [
+        { product_id: 'pA', qty: 2 },
+        { product_id: 'pB', qty: 3 },
+        { product_id: 'pC', qty: 4 },
+      ],
+    } as never);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.paxelBoxSize).toBe('M');
+  });
+
+  it('never reads Product physical fields to pick the box — quantity alone decides', async () => {
+    // A "product" carrying box-sized physical data on purpose: if the selector
+    // ever started reading Product.lengthCm/weightGram, this would silently
+    // change the outcome. It must not — quantity 2 is S regardless.
+    const prisma = buildPrisma();
+    prisma.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'p1', name: 'Baso', price: 45000, stock: 10, status: 'ACTIVE', deletedAt: null,
+        weightGram: 59000, lengthCm: 59, widthCm: 47, heightCm: 47, isFragile: true },
+    ]);
+    const { service, shipping } = build(prisma);
+    await service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 2 }] } as never);
+
+    expect(shipping.getQuotes.mock.calls[0][0].paxelBoxSize).toBe('S');
+  });
+});
+
+// ================================================ PAXELBOX-5: real weight ==
+// RATE weight is now SUM(Product.weightGram x quantity), replacing the legacy
+// `totalItems x 500g`. The WEIGHT axis and the BOX axis are deliberately
+// independent: weight comes from real product data, the box comes only from
+// total quantity.
+
+describe('OrdersService — RATE weight comes from real product data', () => {
+  it('1 SKU x quantity uses the actual product weight', async () => {
+    const { service, shipping } = build(buildPrisma()); // PRODUCT weighs 250g
+    await service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 4 }] } as never);
+
+    expect(shipping.getQuotes.mock.calls[0][0].weightGram).toBe(4 * 250);
+  });
+
+  it('sums the ACTUAL weights across multiple SKUs, not a flat per-item constant', async () => {
+    const prisma = buildPrisma();
+    prisma.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'pA', name: 'Baso A', price: 45000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: 250 },
+      { id: 'pB', name: 'Mie', price: 20000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: 120 },
+      { id: 'pC', name: 'Es Teh', price: 8000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: 400 },
+    ]);
+    const { service, shipping } = build(prisma);
+    await service.getShippingOptions(USER, {
+      address_id: 'addr-1',
+      items: [
+        { product_id: 'pA', qty: 2 },
+        { product_id: 'pB', qty: 3 },
+        { product_id: 'pC', qty: 1 },
+      ],
+    } as never);
+
+    // 2*250 + 3*120 + 1*400 = 1260. The old placeholder would have said 6*500=3000.
+    expect(shipping.getQuotes.mock.calls[0][0].weightGram).toBe(1260);
+    expect(shipping.getQuotes.mock.calls[0][0].weightGram).not.toBe(6 * 500);
+  });
+
+  it('11+ items are no longer forced over the 5000g city cap by the placeholder', async () => {
+    // The regression PAXELBOX-4 surfaced: 11 x 500g = 5500g exceeded Paxel's
+    // /rates/city cap, so SAMEDAY/NEXTDAY/REGULAR silently produced no quote.
+    // With real weights, 11 light items stay well inside the cap.
+    const { service, shipping } = build(buildPrisma()); // 250g each
+    await service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 11 }] } as never);
+
+    const request = shipping.getQuotes.mock.calls[0][0];
+    expect(request.weightGram).toBe(11 * 250); // 2750g
+    expect(request.weightGram).toBeLessThanOrEqual(5000);
+    expect(11 * 500).toBeGreaterThan(5000); // what the old placeholder would have produced
+  });
+
+  it('refuses a product with no configured weight instead of guessing 500g', async () => {
+    const prisma = buildPrisma();
+    prisma.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'p1', name: 'Baso Tanpa Berat', price: 45000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: null },
+    ]);
+    const { service, shipping } = build(prisma);
+
+    await expect(
+      service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 2 }] } as never),
+    ).rejects.toThrow(/Baso Tanpa Berat has no weight configured/);
+    expect(shipping.getQuotes).not.toHaveBeenCalled();
+  });
+
+  it('names every unweighed product, and never quotes a partial weight', async () => {
+    const prisma = buildPrisma();
+    prisma.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'pA', name: 'Baso A', price: 45000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: 250 },
+      { id: 'pB', name: 'Mie', price: 20000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: null },
+      { id: 'pC', name: 'Es Teh', price: 8000, stock: 99, status: 'ACTIVE', deletedAt: null, weightGram: null },
+    ]);
+    const { service, shipping } = build(prisma);
+
+    await expect(
+      service.getShippingOptions(USER, {
+        address_id: 'addr-1',
+        items: [{ product_id: 'pA', qty: 1 }, { product_id: 'pB', qty: 1 }, { product_id: 'pC', qty: 1 }],
+      } as never),
+    ).rejects.toThrow(/Mie, Es Teh have no weight configured/);
+    expect(shipping.getQuotes).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrdersService — weight and box stay independent axes', () => {
+  it('a heavy product does not change the box; a light one does not either — only quantity does', async () => {
+    const heavy = buildPrisma();
+    heavy.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'p1', name: 'Berat', price: 45000, stock: 99, status: 'ACTIVE', deletedAt: null,
+        weightGram: 4000, lengthCm: 50, widthCm: 50, heightCm: 50, isFragile: true },
+    ]);
+    const a = build(heavy);
+    await a.service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 2 }] } as never);
+    const heavyReq = a.shipping.getQuotes.mock.calls[0][0];
+
+    const light = buildPrisma();
+    light.product.findMany = jest.fn().mockResolvedValue([
+      { id: 'p1', name: 'Ringan', price: 45000, stock: 99, status: 'ACTIVE', deletedAt: null,
+        weightGram: 5, lengthCm: 1, widthCm: 1, heightCm: 1, isFragile: false },
+    ]);
+    const b = build(light);
+    await b.service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty: 2 }] } as never);
+    const lightReq = b.shipping.getQuotes.mock.calls[0][0];
+
+    // Same quantity (2) -> same box, despite an 800x weight difference and
+    // wildly different product dimensions.
+    expect(heavyReq.paxelBoxSize).toBe('S');
+    expect(lightReq.paxelBoxSize).toBe('S');
+    // ...while the weight axis correctly reflects the real products.
+    expect(heavyReq.weightGram).toBe(8000);
+    expect(lightReq.weightGram).toBe(10);
   });
 });

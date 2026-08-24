@@ -120,18 +120,30 @@ describe('Checkout — OrderItem physical snapshot', () => {
     expect(snapshot.isFragile).toBe(true);
   });
 
-  it('carries nulls through for a legacy product with no measurements — never invents them', async () => {
-    const legacy = product({ weightGram: null, lengthCm: null, widthCm: null, heightCm: null, isFragile: false });
+  it('carries null DIMENSIONS through for a legacy product — never invents them', async () => {
+    // PAXELBOX-5 narrowed this case. A weight is now required to quote shipping
+    // at all, so a product with a null weightGram can no longer reach checkout
+    // (covered by the rejection test below). Dimensions remain nullable here and
+    // must still pass through untouched — Paxel CREATE is where their absence is
+    // caught, and it must see a real null rather than an invented number.
+    const legacy = product({ weightGram: 450, lengthCm: null, widthCm: null, heightCm: null, isFragile: false });
     const { service, tx } = build([legacy]);
     await service.checkout(USER, dto());
 
     expect(createdItems(tx)[0]).toMatchObject({
-      weightGram: null,
+      weightGram: 450,
       lengthCm: null,
       widthCm: null,
       heightCm: null,
       isFragile: false,
     });
+  });
+
+  it('refuses checkout outright when the product has no weight — never defaults to 500g', async () => {
+    const unweighed = product({ weightGram: null, lengthCm: null, widthCm: null, heightCm: null, isFragile: false });
+    const { service } = build([unweighed]);
+
+    await expect(service.checkout(USER, dto())).rejects.toThrow(/no weight configured/i);
   });
 
   it('snapshots per line item, so a mixed cart keeps each product distinct', async () => {

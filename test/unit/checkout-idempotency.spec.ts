@@ -11,7 +11,7 @@ const DTO: CreateOrderDto = {
   items: [{ product_id: 'p1', qty: 1 }],
 };
 
-const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 // payment.amount is the transfer total the order.created event carries (business
 // total here since there is no unique code in this suite).
 const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-20260611-12345', totalPrice: 30000, items: [], payment: { amount: 30000 } };

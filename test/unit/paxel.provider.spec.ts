@@ -1,6 +1,7 @@
 import { PaxelProvider } from '../../src/modules/shipping/infrastructure/providers/paxel.provider';
 import { paxelServiceSpec, PAXEL_SERVICES } from '../../src/modules/shipping/infrastructure/providers/paxel-rate.map';
 import { isPaxelDimension, ShippingConfig } from '../../src/modules/shipping/shipping.config';
+import { PaxelBoxSize } from '../../src/modules/shipping/domain/paxel-box';
 import { ShippingHttpRequest, ShippingHttpResponse } from '../../src/modules/shipping/infrastructure/http/shipping-http-client';
 import { ShippingRateRequest } from '../../src/modules/shipping/domain/shipping-provider.interface';
 
@@ -260,6 +261,9 @@ describe('Paxel response normalization', () => {
       serviceName: 'Paxel Same Day',
       estimatedDays: '18:00-22:00',
       shippingCost: 20000,
+      // PAXELBOX-3: okBody() carries fixed_size: 'large' — now propagated
+      // through, distinct from and never overriding our local PaxelBoxSize.
+      fixedSize: 'large',
     });
   });
 
@@ -372,5 +376,57 @@ describe('PAXEL_DEFAULT_DIMENSION validation', () => {
 
   it.each(['', undefined, '30x35', '30-35-20', '0x1x1', '51x10x10', '30x35x20cm'])('rejects %p', (value) => {
     expect(isPaxelDimension(value as string | undefined)).toBe(false);
+  });
+});
+
+// ============================================================ PaxelBox rate ==
+
+describe('PaxelBox integration (PAXELBOX-3)', () => {
+  it.each([
+    ['S', '12x48x48'],
+    ['M', '24x48x48'],
+    ['L', '36x48x48'],
+    ['XL', '59x48x48'],
+  ] as Array<[PaxelBoxSize, string]>)('sends the %s box as dimension "%s", not PAXEL_DEFAULT_DIMENSION', async (paxelBoxSize, expected) => {
+    const { provider, calls } = build(config({ dimension: '30x35x20' }));
+    await provider.getRates({ ...completeRequest, paxelBoxSize });
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(bodyOf(call).dimension).toBe(expected);
+      expect(bodyOf(call).dimension).not.toBe('30x35x20');
+    }
+  });
+
+  it('XL (59 cm) is sent to Paxel even though it exceeds PAXEL_DEFAULT_DIMENSION\'s 1-50 range', async () => {
+    const { provider, calls } = build();
+    await provider.getRates({ ...completeRequest, paxelBoxSize: 'XL' });
+    for (const call of calls) expect(bodyOf(call).dimension).toBe('59x48x48');
+  });
+
+  it('falls back to PAXEL_DEFAULT_DIMENSION when no PaxelBox was selected (legacy/JNE-only callers)', async () => {
+    const { provider, calls } = build(config({ dimension: '30x35x20' }));
+    await provider.getRates(completeRequest); // no paxelBoxSize set
+    for (const call of calls) expect(bodyOf(call).dimension).toBe('30x35x20');
+  });
+
+  it('preserves Paxel\'s fixed_size on the quote without letting it influence the request', async () => {
+    const { provider, calls } = build(config(), () => res(200, okBody()));
+    const quotes = await provider.getRates({ ...completeRequest, paxelBoxSize: 'S' });
+
+    // The request still carries OUR local box, unaffected by any prior response.
+    for (const call of calls) expect(bodyOf(call).dimension).toBe('12x48x48');
+    // okBody() returns fixed_size: "large" regardless of the S box we sent —
+    // the provider's answer is exposed as-is, never reconciled with ours.
+    for (const quote of quotes) expect(quote.fixedSize).toBe('large');
+  });
+
+  it('omits fixedSize entirely when Paxel does not return one', async () => {
+    const { provider } = build(config(), () =>
+      res(200, JSON.stringify({ status_code: 200, message: 'OK', data: { fixed_price: 15000 } })),
+    );
+    const [quote] = await provider.getRates({ ...completeRequest, paxelBoxSize: 'M' });
+    expect(quote.fixedSize).toBeUndefined();
+    expect(Object.keys(quote)).not.toContain('fixedSize');
   });
 });

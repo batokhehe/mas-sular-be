@@ -2,7 +2,7 @@ import { OrdersService } from '../../src/modules/orders/orders.service';
 import { CheckoutCourier, CreateOrderDto } from '../../src/modules/orders/application/dto/create-order.dto';
 
 const USER = 'user-1';
-const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-1', totalPrice: 30000, items: [], payment: {} };
 
 function dto(over: Partial<CreateOrderDto> = {}): CreateOrderDto {

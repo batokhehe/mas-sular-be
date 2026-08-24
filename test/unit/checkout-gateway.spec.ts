@@ -161,7 +161,7 @@ import { PaymentChannelRegistry } from '../../src/modules/payments/gateway/payme
 import { PaymentProviderFactory } from '../../src/modules/payments/gateway/payment-provider.factory';
 
 const USER = 'user-1';
-const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null };
+const PRODUCT = { id: 'p1', name: 'Bakso', price: 20000, stock: 10, status: 'ACTIVE', deletedAt: null, weightGram: 250 };
 const CREATED_ORDER = { id: 'order-1', orderNumber: 'BMS-1', totalPrice: 30000, items: [], payment: { id: 'pay-1', amount: 30000 } };
 
 function checkoutDto(over: Partial<CreateOrderDto> = {}): CreateOrderDto {

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/commo
 import { PrismaService } from '../../database/prisma.service';
 import { ShippingService } from '../shipping/shipping.service';
 import { ShippingQuote } from '../shipping/domain/shipping-provider.interface';
+import { selectPaxelBox } from '../shipping/domain/paxel-box';
 import { DeliveryCoverageService } from '../delivery-coverage/delivery-coverage.service';
 
 export interface AllocationItem {
@@ -153,6 +154,10 @@ export class InventoryAllocationService {
     const qtyByProduct = new Map<string, number>();
     for (const item of items) qtyByProduct.set(item.productId, (qtyByProduct.get(item.productId) ?? 0) + item.quantity);
     const productIds = [...qtyByProduct.keys()];
+    // SUM(OrderItem.quantity) across the whole order — one PaxelBox per order,
+    // never per SKU. Same total as summing `items` directly; derived from the
+    // map already built above rather than a second pass.
+    const totalQuantity = [...qtyByProduct.values()].reduce((sum, qty) => sum + qty, 0);
 
     // Candidate outlets: active outlets with a ProductInventory row for EVERY item
     // and enough available stock (stock − reserved) at that outlet.
@@ -163,7 +168,7 @@ export class InventoryAllocationService {
 
     if (inventories.length === 0) {
       // Migration fallback: no per-outlet inventory yet → use the active outlet.
-      return this.fallbackToActiveOutlet(address, weightGram);
+      return this.fallbackToActiveOutlet(address, weightGram, totalQuantity);
     }
 
     const byOutlet = new Map<string, typeof inventories>();
@@ -198,6 +203,7 @@ export class InventoryAllocationService {
           originLongitude: toNum(outlet.longitude) ?? undefined,
           destinationLatitude: destLat ?? undefined,
           destinationLongitude: destLng ?? undefined,
+          paxelBoxSize: selectPaxelBox(totalQuantity),
           ...regionFields(outlet, address),
         });
         const cheapest = [...quotes].sort((a, b) => a.shippingCost - b.shippingCost)[0];
@@ -252,7 +258,11 @@ export class InventoryAllocationService {
     return withScore.sort((a, b) => a.score - b.score)[0];
   }
 
-  private async fallbackToActiveOutlet(address: AllocationAddress, weightGram: number): Promise<AllocationResult> {
+  private async fallbackToActiveOutlet(
+    address: AllocationAddress,
+    weightGram: number,
+    totalQuantity: number,
+  ): Promise<AllocationResult> {
     const outlet = await this.prisma.outlet.findFirst({
       where: { isActive: true },
       include: OUTLET_REGION_NAMES.include,
@@ -266,6 +276,7 @@ export class InventoryAllocationService {
       originLongitude: toNum(outlet.longitude) ?? undefined,
       destinationLatitude: toNum(address.latitude) ?? undefined,
       destinationLongitude: toNum(address.longitude) ?? undefined,
+      paxelBoxSize: selectPaxelBox(totalQuantity),
       ...regionFields(outlet, address),
     });
     return {
