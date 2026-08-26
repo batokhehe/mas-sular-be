@@ -1,0 +1,1 @@
+ALTER TABLE `Order` ADD COLUMN `paymentServiceFee` INTEGER NOT NULL DEFAULT 0;

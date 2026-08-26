@@ -118,6 +118,16 @@ export class CheckoutSummaryDto {
   @IsString()
   voucher_code?: string;
 
+  /** Current checkout channel; the backend uses its structured code for fees. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  payment_channel?: string;
+
+  @IsOptional()
+  @IsEnum(PaymentMethod)
+  payment_method?: PaymentMethod;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CheckoutItemDto)

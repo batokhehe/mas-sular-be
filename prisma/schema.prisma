@@ -476,6 +476,8 @@ model Order {
   subtotal                 Int
   voucherDiscountAmount    Int                    @default(0)
   deliveryFee              Int
+  /// Immutable customer-borne gateway fee selected at checkout; legacy orders are zero.
+  paymentServiceFee        Int                    @default(0)
   totalPrice               Int
   paymentMethod            PaymentMethod
   notes                    String?

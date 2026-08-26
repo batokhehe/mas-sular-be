@@ -172,6 +172,15 @@ describe('createCharge — per channel', () => {
     expect(result.expiresAt).toBeInstanceOf(Date);
   });
 
+  it('forwards Payment.amount to gross_amount exactly once', async () => {
+    const { p, calls } = provider([{ status: 201, body: pending({ qr_string: 'QR-DATA', gross_amount: '30210.00' }) }]);
+    await p.createCharge({ ...REQUEST, amount: 30_210, channel: 'QRIS' });
+
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.transaction_details.gross_amount).toBe(30_210);
+    expect(body.transaction_details.gross_amount).not.toBe(30_420);
+  });
+
   it('GoPay: returns a deeplink action', async () => {
     const { p, calls } = provider([
       { status: 201, body: pending({ payment_type: 'gopay', actions: [{ name: 'deeplink-redirect', url: 'gojek://pay' }] }) },

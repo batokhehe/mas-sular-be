@@ -24,6 +24,7 @@ import { PaymentInitiationService } from '../payments/gateway/payment-initiation
 import { PaymentChannelRegistry } from '../payments/gateway/payment-channel.registry';
 import { buildCheckoutGatewayPayload } from '../payments/gateway/domain/payment-instruction.builder';
 import { DEFAULT_PAYMENT_METHOD, isSelectablePaymentMethod, selectablePaymentMethods } from '../payments/gateway/domain/payment-channel';
+import { calculatePaymentServiceFee } from '../payments/gateway/domain/payment-service-fee';
 
 type NormalizedCheckoutItem = {
   productId: string;
@@ -573,12 +574,18 @@ export class OrdersService {
       discount = this.calculateVoucherDiscount(voucher, subtotal, deliveryFee);
     }
 
+    const transactionBase = subtotal + deliveryFee - discount;
+    const paymentServiceFee = dto.payment_method === PaymentMethod.GATEWAY
+      ? calculatePaymentServiceFee({ paymentChannel: dto.payment_channel, transactionBase }).feeAmount
+      : 0;
+
     return {
       subtotal,
       shipping_cost: deliveryFee,
       delivery_fee: deliveryFee,
       discount,
-      grand_total: subtotal + deliveryFee - discount,
+      payment_service_fee: paymentServiceFee,
+      grand_total: transactionBase + paymentServiceFee,
       total_items: totalItems,
       estimated_days: quote.estimatedDays,
       estimated_minutes: null as number | null,
@@ -770,13 +777,10 @@ export class OrdersService {
     // selection (Phase 4A — COD is no longer selectable).
     const paymentMethod = dto.payment_method ?? DEFAULT_PAYMENT_METHOD;
 
-    // Accounting split: the unique code is NOT business revenue — it only identifies
-    // the bank transfer. So the business total (subtotal + shipping - discount) is
-    // stored on Order.totalPrice (what reports sum), while the transfer total
-    // (businessTotal + uniqueCode) is stored on Payment.amount (what the customer
-    // sends). Only BANK_TRANSFER gets a code; when it is null (QRIS/COD/legacy/disabled)
-    // transferTotal == businessTotal, so Payment.amount == Order.totalPrice.
-    const businessTotal = summary.grand_total;
+    // Order.totalPrice is the backend-calculated customer charge, including the
+    // immutable gateway-fee snapshot. The manual transfer code remains separate:
+    // it is added only to Payment.amount and is never order revenue.
+    const chargedTotal = summary.grand_total;
 
     const order = await this.prisma.$transaction(async (tx) => {
       // C4: unique-code allocation runs INSIDE the checkout transaction, so the
@@ -784,10 +788,10 @@ export class OrdersService {
       // the payment row is created (a pre-tx probe could race a concurrent
       // checkout committing the same transfer total between check and create).
       let uniqueCode: number | null = null;
-      let transferTotal = businessTotal;
+      let transferTotal = chargedTotal;
       if (paymentMethod === PaymentMethod.BANK_TRANSFER && this.uniqueCode?.isEnabled()) {
-        uniqueCode = await this.uniqueCode.allocateInTx(tx, businessTotal);
-        if (uniqueCode !== null) transferTotal = businessTotal + uniqueCode;
+        uniqueCode = await this.uniqueCode.allocateInTx(tx, chargedTotal);
+        if (uniqueCode !== null) transferTotal = chargedTotal + uniqueCode;
       }
       // Legacy path (no inventory service wired): decrement Product.stock now.
       // Reservation path (inventory present): stock is RESERVED after order.create
@@ -818,8 +822,10 @@ export class OrdersService {
           subtotal: summary.subtotal,
           deliveryFee: summary.shipping_cost,
           voucherDiscountAmount: summary.discount,
-          // Business revenue only — the unique code lives on Payment.amount, not here.
-          totalPrice: businessTotal,
+          paymentServiceFee: summary.payment_service_fee,
+          // Unique code lives only on Payment.amount; the service fee is part of
+          // the immutable customer charge snapshot above.
+          totalPrice: chargedTotal,
           coverageId: summary.coverage_id ?? undefined,
           estimatedDeliveryMinutes: summary.estimated_minutes ?? undefined,
           outletId: summary.outlet_id ?? undefined,
@@ -864,7 +870,7 @@ export class OrdersService {
           payment: {
             create: {
               method: paymentMethod,
-              // Transfer total = businessTotal + uniqueCode (what the customer sends).
+              // Transfer total = chargedTotal + uniqueCode (what the customer sends).
               amount: transferTotal,
               uniqueCode,
               status: PaymentStatus.PENDING,

@@ -1,4 +1,4 @@
-import { GatewayTransactionStatus, PaymentMethod } from '@prisma/client';
+import { GatewayTransactionStatus, PaymentMethod, VoucherType } from '@prisma/client';
 import { PAYMENT_CHANNELS, toPublicChannel } from '../../src/modules/payments/gateway/domain/payment-channel';
 import {
   buildCheckoutGatewayPayload,
@@ -234,6 +234,50 @@ describe('checkout → gateway integration', () => {
       paymentMethod: PaymentMethod.GATEWAY, paymentChannel: 'QRIS', provider: 'midtrans', qrString: 'QR-DATA',
     });
     expect((body.paymentInstruction as { type: string }).type).toBe('QR');
+  });
+
+  it('calculates the QRIS fee once from subtotal + shipping, then persists and charges that total', async () => {
+    const initiate = chargeOk();
+    const { service, prisma } = checkoutService(initiate);
+
+    await service.checkout(USER, checkoutDto({ payment_method: PaymentMethod.GATEWAY, payment_channel: 'QRIS' }));
+
+    const data = prisma.__tx.order.create.mock.calls[0][0].data;
+    // Product (20,000) + shipping (10,000) is the fee base: no tax is added.
+    expect(data.paymentServiceFee).toBe(210);
+    expect(data.totalPrice).toBe(30_210);
+    expect(data.payment.create.amount).toBe(30_210);
+    // Shipping is stored unchanged and is not conflated with the payment fee.
+    expect(data.shipment.create.cost).toBe(10_000);
+  });
+
+  it('recalculates the summary when the selected gateway channel changes', async () => {
+    const { service } = checkoutService();
+
+    const qris = await service.getSummary(USER, checkoutDto({ payment_method: PaymentMethod.GATEWAY, payment_channel: 'QRIS' }));
+    const gopay = await service.getSummary(USER, checkoutDto({ payment_method: PaymentMethod.GATEWAY, payment_channel: 'GOPAY' }));
+    const bni = await service.getSummary(USER, checkoutDto({ payment_method: PaymentMethod.GATEWAY, payment_channel: 'BNI_VA' }));
+    const bca = await service.getSummary(USER, checkoutDto({ payment_method: PaymentMethod.GATEWAY, payment_channel: 'BCA_VA' }));
+
+    expect([qris, gopay, bni, bca].map((summary) => summary.payment_service_fee)).toEqual([210, 600, 4_000, 0]);
+    expect([qris, gopay, bni, bca].map((summary) => summary.grand_total)).toEqual([30_210, 30_600, 34_000, 30_000]);
+  });
+
+  it('deducts an existing voucher discount before calculating the QRIS fee base', async () => {
+    const { service, prisma } = checkoutService();
+    prisma.promo.findFirst.mockResolvedValue({
+      id: 'promo-1', code: 'SAVE5K', isActive: true, startDate: null, endDate: null,
+      maxUsageCount: null, currentUsageCount: 0, minimumOrderAmount: 0, isNewUserOnly: false,
+      voucherType: VoucherType.FIXED_DISCOUNT, discountAmount: 5_000, discountPercentage: null,
+      maxDiscountAmount: null, freeShippingMaxAmount: null,
+    });
+
+    const summary = await service.getSummary(USER, checkoutDto({
+      voucher_code: 'save5k', payment_method: PaymentMethod.GATEWAY, payment_channel: 'QRIS',
+    }));
+
+    // (20,000 subtotal + 10,000 shipping - 5,000 voucher) × 0.7% = 175.
+    expect(summary).toMatchObject({ discount: 5_000, payment_service_fee: 175, grand_total: 25_175 });
   });
 
   it('BANK_TRANSFER: byte-compatible — no gateway call, no extra fields', async () => {
