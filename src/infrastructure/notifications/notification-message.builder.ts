@@ -63,6 +63,19 @@ export class NotificationMessageBuilder {
         shippingService: String(p.shippingService ?? ''),
         trackingNumber: String(p.trackingNumber ?? ''),
       };
+    } else if (template === 'order.new') {
+      // INTERNAL operational alert. Every value is copied from the payload the
+      // consumer composed at enqueue time — no business lookup here, so the
+      // alert says what was true when the order arrived.
+      variables = {
+        template: 'order.new',
+        customerName,
+        orderNumber,
+        grandTotal: Number(p.grandTotal ?? 0),
+        paymentSummary: String(p.paymentSummary ?? ''),
+        shippingSummary: String(p.shippingSummary ?? ''),
+        adminOrderUrl: String(p.adminOrderUrl ?? ''),
+      };
     } else if (template === 'order.transfer') {
       const account = await this.accounts.getActiveAccount(); // → ConfigurationError if none active
       const uploadToken = String(p.uploadToken ?? '');

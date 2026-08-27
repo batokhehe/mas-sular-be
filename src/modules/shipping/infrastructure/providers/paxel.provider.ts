@@ -71,6 +71,20 @@ export class PaxelProvider implements ShippingProvider {
   }
 
   async getRates(request: ShippingRateRequest): Promise<ShippingQuote[]> {
+    // The caller computed a box and the order fits none of them (>20 items;
+    // XL is out of scope). Paxel cannot carry it, so it offers nothing —
+    // checked before the enabled/mock branches so an unshippable order is never
+    // quoted a price, real or mocked. Other couriers are unaffected: this
+    // returns an empty list, it does not fail the request.
+    if (request.paxelBoxSize === null) {
+      this.logger.warn({
+        provider: this.name,
+        outcome: 'unavailable',
+        reason: 'paxel_box_unsupported_quantity',
+      });
+      return [];
+    }
+
     if (!this.cfg.enabled) return this.config.allowMockRates ? this.mockRates(request) : [];
 
     const quotes = await Promise.all(

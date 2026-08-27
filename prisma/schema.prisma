@@ -242,6 +242,17 @@ model District {
   cityId            String
   code              String             @unique
   name              String
+  /// RajaOngkir's own district id, for JNE rate lookups only (PAXELBOX-41).
+  /// Int because the API returns it as a JSON number (`"id": 1360`), not a string.
+  ///
+  /// NULLABLE and deliberately NOT unique. Null means "no verified RajaOngkir
+  /// mapping for this district", which the rate path must read as "no JNE quote
+  /// here" — never as a reason to guess, and never as an error that breaks
+  /// checkout. Uniqueness is not declared because a one-to-one correspondence
+  /// between Kemendagri districts and RajaOngkir districts is NOT proven; the
+  /// import tool still refuses to emit duplicates, so the guarantee is enforced
+  /// where there is evidence for it rather than asserted in the schema.
+  rajaOngkirId      Int?
   isActive          Boolean            @default(true)
   city              City               @relation(fields: [cityId], references: [id], onDelete: Cascade)
   villages          Village[]

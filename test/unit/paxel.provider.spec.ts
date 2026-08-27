@@ -410,6 +410,28 @@ describe('PaxelBox integration (PAXELBOX-3)', () => {
     for (const call of calls) expect(bodyOf(call).dimension).toBe('30x35x20');
   });
 
+  // PAXELBOX-17. `null` is NOT the same as absent: absent means "no box was
+  // computed" (fall back), null means "computed, and nothing fits" (>20 items,
+  // XL being out of scope). The latter must not be priced at the default box.
+  it('offers nothing, and calls Paxel not at all, when the order fits no box (null)', async () => {
+    const { provider, calls } = build(config({ dimension: '30x35x20' }));
+
+    const quotes = await provider.getRates({ ...completeRequest, paxelBoxSize: null });
+
+    expect(quotes).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not fall back to the default dimension for an unsupported quantity', async () => {
+    const { provider, calls } = build(config({ dimension: '30x35x20' }));
+
+    await provider.getRates({ ...completeRequest, paxelBoxSize: null });
+
+    // The bug this replaced: null was falsy, so it took the same branch as
+    // "absent" and quoted 30x35x20 for a parcel that does not fit any box.
+    expect(calls.map((call) => bodyOf(call).dimension)).not.toContain('30x35x20');
+  });
+
   it('preserves Paxel\'s fixed_size on the quote without letting it influence the request', async () => {
     const { provider, calls } = build(config(), () => res(200, okBody()));
     const quotes = await provider.getRates({ ...completeRequest, paxelBoxSize: 'S' });

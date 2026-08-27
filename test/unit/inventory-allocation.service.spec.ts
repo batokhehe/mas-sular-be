@@ -180,10 +180,12 @@ describe('InventoryAllocationService — PaxelBox reaches both request paths', (
     expect(request.paxelBoxSize).toBe('M');
   });
 
-  it('quantity 21 on the fallback path -> PaxelBox XL', async () => {
+  // PAXELBOX-17: this asserted 'XL'. XL is out of scope, so a 21-item order
+  // has no box; the request carries null and Paxel returns no quotes.
+  it('quantity 21 on the fallback path -> no PaxelBox (null)', async () => {
     const { service, shipping } = build([], {});
     await service.allocate([{ productId: 'p1', quantity: 21 }], ADDRESS, 1000);
 
-    expect(shipping.getQuotes.mock.calls[0][0].paxelBoxSize).toBe('XL');
+    expect(shipping.getQuotes.mock.calls[0][0].paxelBoxSize).toBeNull();
   });
 });

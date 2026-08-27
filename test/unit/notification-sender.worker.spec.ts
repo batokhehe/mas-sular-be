@@ -77,11 +77,17 @@ function build(config = cfg(), rows: ReturnType<typeof row>[] = [row()]) {
     ),
   };
   const metrics = buildMetrics();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const worker = new NotificationSenderWorker(prisma as any, builder as any, factory as any, metrics as any, config);
+  // PAXELBOX-31: these cases exercise claim/retry/breaker/fencing semantics, not
+  // the safety gate, so they run with delivery authorized. The gate's own
+  // behaviour is pinned in notification-delivery-gate.spec.ts.
+  const gate = { assertDeliverable: jest.fn() };
+  const worker = new NotificationSenderWorker(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    prisma as any, builder as any, factory as any, metrics as any, config, gate as any,
+  );
   (worker as any).nowMs = () => NOW;
   (worker as any).randomFn = () => 0.5;
-  return { worker, prisma, provider, providerSend, factory, builder, metrics };
+  return { worker, prisma, provider, providerSend, factory, builder, metrics, gate };
 }
 
 describe('NotificationSenderWorker', () => {

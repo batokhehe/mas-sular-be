@@ -22,8 +22,20 @@
  * guessed at here. The dimensions below are business data only.
  */
 
-/** Box sizes, smallest first. Order matters: `selectPaxelBox` walks it in order. */
+/** Every box Paxel documents, smallest first. Reference data, NOT the selectable set. */
 export const PAXEL_BOX_SIZES = ['S', 'M', 'L', 'XL'] as const;
+
+/**
+ * The boxes this application will actually put an order in, smallest first.
+ * Order matters: `selectPaxelBox` walks it in order and takes the first fit.
+ *
+ * XL is deliberately EXCLUDED. It is out of scope as a business decision, and
+ * Paxel rejected its 59 cm depth on the city-rate endpoint during staging QA,
+ * so selecting it would produce an order that cannot be priced. Its spec stays
+ * in `SPECS` because the dimension is real and `paxelBoxSpec('XL')` remains a
+ * truthful lookup — it just can never be chosen.
+ */
+export const SELECTABLE_PAXEL_BOX_SIZES = ['S', 'M', 'L'] as const;
 
 export type PaxelBoxSize = (typeof PAXEL_BOX_SIZES)[number];
 
@@ -75,18 +87,22 @@ export function isPaxelBoxSize(value: string): value is PaxelBoxSize {
  * Paxel provider already rejects out-of-contract numbers (`assertRange`,
  * `paxelCreateServiceType`) rather than clamping them.
  */
-export function selectPaxelBox(totalQuantity: number): PaxelBoxSize {
+export function selectPaxelBox(totalQuantity: number): PaxelBoxSize | null {
   if (!Number.isInteger(totalQuantity) || totalQuantity < 1) {
     throw new RangeError(
       `PaxelBox requires a total quantity of at least 1 whole item (got ${totalQuantity})`,
     );
   }
 
-  for (const size of PAXEL_BOX_SIZES) {
+  for (const size of SELECTABLE_PAXEL_BOX_SIZES) {
     const { maxQuantity } = SPECS[size];
-    if (maxQuantity === null || totalQuantity <= maxQuantity) return size;
+    // Every selectable box is bounded, so this never falls through to XL.
+    if (maxQuantity !== null && totalQuantity <= maxQuantity) return size;
   }
 
-  // Unreachable: XL has no upper bound, so the loop always returns.
-  return 'XL';
+  // Past L (>20). XL is out of scope, and no smaller box fits, so there is no
+  // PaxelBox for this order. Returning null says exactly that; returning XL
+  // would ship an out-of-scope box and returning S/M/L would understate the
+  // parcel. The caller decides what to do with "Paxel cannot take this".
+  return null;
 }

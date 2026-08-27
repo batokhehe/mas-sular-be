@@ -1,7 +1,10 @@
-import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { ConflictException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import type { Cache } from 'cache-manager';
 import { OrderStatus, PaymentStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ShipmentService } from '../shipment/shipment.service';
+import { trackingCacheKey } from '../shipment/shipment-sync.service';
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import { CreateBannerDto } from '../cms/application/dto/banner.dto';
 import {
@@ -64,6 +67,10 @@ export class AdminService {
     // Phase 5D: the shared settlement path. Optional so the many existing tests that
     // construct AdminService positionally keep working — see `settlement` below.
     @Optional() private readonly injectedSettlement?: PaymentSettlementService,
+    // PAXELBOX-33: used only to drop a stale tracking response after a manual
+    // shipment edit. Optional for the same reason as the deps above, and safe
+    // to be absent — invalidation is best-effort, not a guard.
+    @Optional() @Inject(CACHE_MANAGER) private readonly cache?: Cache,
   ) { }
 
   private lazySettlement?: PaymentSettlementService;
@@ -574,8 +581,80 @@ export class AdminService {
     return shipment;
   }
 
+  /**
+   * Drop the cached courier answer for this parcel, if there is one to drop.
+   *
+   * Best-effort by design, and deliberately NOT a safety boundary: the repo's
+   * cache convention is that a cache fault degrades to uncached work rather
+   * than failing it, and failing to invalidate only restores the pre-existing
+   * behaviour (the next tick may reason about an answer up to the TTL old).
+   */
+  private async invalidateTrackingCache(provider: string, trackingNumber: string | null): Promise<void> {
+    if (!this.cache || !trackingNumber) return;
+    try {
+      await this.cache.del(trackingCacheKey(provider, trackingNumber));
+    } catch {
+      // Cache unreachable — the edit itself must still succeed.
+    }
+  }
+
   async updateShipment(id: string, dto: UpdateShipmentDto) {
-    await this.getShipment(id);
+    const existing = await this.getShipment(id);
+
+    // A shipment that already carries an airwaybill describes a booking a
+    // courier has accepted. Re-pointing it at a different provider or service
+    // would leave the record describing something nobody agreed to ship, while
+    // the real parcel keeps moving under the original terms — and the customer
+    // was priced for that original service. Changing it needs a rebooking, not
+    // an edit, so the edit is refused rather than silently applied.
+    //
+    // Compared by VALUE, not presence: the edit form resubmits every field, so
+    // rejecting a merely-present provider/service would make a booked shipment
+    // completely uneditable — even for its cost or tracking URL.
+    const booked = Boolean(existing.trackingNumber || existing.providerShipmentId);
+    if (booked) {
+      const retargeted: string[] = [];
+      if (dto.provider !== undefined && dto.provider !== existing.provider) retargeted.push('provider');
+      if (dto.service !== undefined && dto.service !== existing.service) retargeted.push('service');
+      if (retargeted.length > 0) {
+        throw new ConflictException(
+          `Cannot change the ${retargeted.join(' or ')} of a shipment that already has an airwaybill ` +
+            `(${existing.trackingNumber ?? existing.providerShipmentId}). Cancel and rebook instead.`,
+        );
+      }
+
+      // PAXELBOX-33: the airwaybill itself is not editable once one exists.
+      //
+      // Every other writer of trackingNumber copies it from the courier's own
+      // CREATE response (shipment.service post-CREATE, reached by verify, admin
+      // retry and reconciliation alike). This PATCH is the only place an
+      // arbitrary value can be written, and replacing a booked AWB silently
+      // detaches the record from the real parcel: tracking would poll a number
+      // the courier never issued for this shipment, the original booking would
+      // keep moving untracked, and the stored providerShipmentId/payload would
+      // describe a different consignment than the field beside them.
+      //
+      // Presence is fine — the edit form resubmits every field — so this
+      // compares by VALUE, exactly like the provider/service guard above.
+      if (dto.trackingNumber !== undefined && dto.trackingNumber !== existing.trackingNumber) {
+        throw new ConflictException(
+          `Cannot replace the airwaybill of a shipment that is already booked ` +
+            `(${existing.trackingNumber ?? existing.providerShipmentId}). Cancel and rebook instead.`,
+        );
+      }
+    }
+
+    // A manual edit can move the shipment to a status that is still polled. The
+    // courier's last answer stays reusable for the PAXELBOX-27 TTL (2h), so the
+    // very next tick could compare against a response older than the edit and
+    // overwrite it. Dropping the key costs one cache round-trip and makes the
+    // next tick ask the courier again; it does not change what tracking
+    // concludes, only how fresh the answer it reasons about is.
+    //
+    // Only meaningful once a courier identity exists — a draft has nothing
+    // cached under it.
+    await this.invalidateTrackingCache(existing.provider, existing.trackingNumber);
+
     return this.prisma.shipment.update({
       where: { id },
       data: {
@@ -592,7 +671,27 @@ export class AdminService {
   }
 
   async deleteShipment(id: string) {
-    await this.getShipment(id);
+    const existing = await this.getShipment(id);
+
+    // Once a courier has issued an airwaybill there is a real parcel booked in
+    // the outside world. Deleting the row does not cancel it: the booking stays
+    // live, while the only records of it here — providerShipmentId, the stored
+    // provider payload, the pickup slot and the whole status history (which
+    // cascades) — are destroyed, and the order is left SHIPPED with no shipment
+    // row, so it can never be re-booked or tracked again.
+    //
+    // The providers DO implement cancelShipment(), but nothing in the
+    // application calls it yet, so there is no in-app way to undo the booking
+    // first. Until that is wired up, refusing is the only option that cannot
+    // silently strand a parcel. Unbooked drafts stay deletable.
+    const airwaybill = existing.trackingNumber ?? existing.providerShipmentId;
+    if (airwaybill) {
+      throw new ConflictException(
+        `Cannot delete shipment ${airwaybill}: the courier booking would stay live while its record is destroyed. ` +
+          `Cancel the booking with the courier first.`,
+      );
+    }
+
     return this.prisma.shipment.delete({ where: { id } });
   }
 

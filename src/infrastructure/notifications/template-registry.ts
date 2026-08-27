@@ -22,8 +22,14 @@ export interface ProviderTemplateDescriptor {
   providerTemplateId: string;
   /** WhatsApp body parameter layout (undefined for non-templated channels). */
   body?: QontakBodyParam[];
-  /** Include the dynamic-URL button fed by variables.uploadToken. */
+  /** Include the dynamic-URL button. */
   button?: boolean;
+  /**
+   * Which variable feeds the button's URL slot. Defaults to `uploadToken`, the
+   * only source that existed before PAXELBOX-37, so every template registered
+   * before this field appeared keeps its exact behaviour.
+   */
+  buttonSource?: string;
 }
 
 @Injectable()
@@ -94,6 +100,25 @@ export class TemplateRegistry {
         { key: '3', valueName: 'tracking', source: 'trackingNumber' },
       ],
       button: false,
+    });
+    /**
+     * INTERNAL operational alert — "Pesanan Baru Masuk". Goes to an operator,
+     * not a customer, and its button deep-links the admin order-detail page.
+     * Registered like every other template so it inherits the same outbox,
+     * sender worker and PAXELBOX-31 delivery gate; nothing about it bypasses
+     * the checks a customer message goes through.
+     */
+    this.register(NotificationChannel.WHATSAPP, 'order.new', {
+      providerTemplateId: qontak.newOrderTemplateId ?? '',
+      body: [
+        { key: '1', valueName: 'order_no', source: 'orderNumber' },
+        { key: '2', valueName: 'customer_name', source: 'customerName' },
+        { key: '3', valueName: 'total', source: 'grandTotal', format: 'currency' },
+        { key: '4', valueName: 'payment', source: 'paymentSummary' },
+        { key: '5', valueName: 'shipping', source: 'shippingSummary' },
+      ],
+      button: true,
+      buttonSource: 'adminOrderUrl',
     });
     // Manual sends share ONE approved free-text Qontak template ({{1}} = message).
     // resolve() rejects them with ConfigurationError until QONTAK_MANUAL_TEMPLATE_ID

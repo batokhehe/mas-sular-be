@@ -4,7 +4,12 @@ import { PrismaService } from '../../database/prisma.service';
 import { LogService } from '../../infrastructure/logging/log.service';
 import { SHIPMENT_RECONCILIATION_CONFIG, ShipmentReconciliationConfig } from './shipment-reconciliation.config';
 import { ShipmentReconciliationMetrics } from './shipment-reconciliation.metrics';
-import { AWAITING_PICKUP_SCHEDULE, BOOKING_IN_PROGRESS, ShipmentService } from './shipment.service';
+import {
+  AWAITING_MANUAL_FULFILMENT,
+  AWAITING_PICKUP_SCHEDULE,
+  BOOKING_IN_PROGRESS,
+  ShipmentService,
+} from './shipment.service';
 
 /**
  * Recovers orders that were paid but never got a shipment booked — e.g. the process
@@ -138,6 +143,13 @@ export class ShipmentReconciliationWorker implements OnApplicationBootstrap, OnM
       // metric, which would otherwise alarm on every order awaiting packing.
       if (!outcome.ok && outcome.error === AWAITING_PICKUP_SCHEDULE) {
         this.logger.log({ event: 'reconciliation.skipped', orderId, reason: 'awaiting_pickup_schedule' });
+        continue;
+      }
+      // Same shape of "waiting on a person": this courier is booked outside the
+      // application, so there is nothing for reconciliation to do and never will
+      // be. Counting it as a failure would alarm on every JNE order forever.
+      if (!outcome.ok && outcome.error === AWAITING_MANUAL_FULFILMENT) {
+        this.logger.log({ event: 'reconciliation.skipped', orderId, reason: 'manual_fulfilment' });
         continue;
       }
       if (outcome.ok) {

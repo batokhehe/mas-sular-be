@@ -10,6 +10,8 @@ export interface QontakConfig {
   shippedTemplateId?: string; // "Pesanan Anda telah dikirim"
   deliveredTemplateId?: string; // delivery confirmation
   shipmentTemplateId?: string; // generic shipment status update
+  /** INTERNAL new-order operational alert (PAXELBOX-37). Not a customer template. */
+  newOrderTemplateId?: string;
   /** Approved free-text template ({{1}} = message) for admin manual sends. Optional — without it, manual WhatsApp sends are rejected at the API. */
   manualTemplateId?: string;
   /** Per-request timeout (ms). */
@@ -28,6 +30,7 @@ export function loadQontakConfig(env: NodeJS.ProcessEnv = process.env): QontakCo
     shippedTemplateId: env.QONTAK_SHIPPED_TEMPLATE_ID,
     deliveredTemplateId: env.QONTAK_DELIVERED_TEMPLATE_ID,
     shipmentTemplateId: env.QONTAK_SHIPMENT_TEMPLATE_ID,
+    newOrderTemplateId: env.QONTAK_NEW_ORDER_TEMPLATE_ID,
     manualTemplateId: env.QONTAK_MANUAL_TEMPLATE_ID,
     timeoutMs: positiveInt(env.QONTAK_TIMEOUT_MS, 10_000),
     maxRetry: positiveInt(env.QONTAK_MAX_RETRY, 1),

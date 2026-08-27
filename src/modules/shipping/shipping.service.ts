@@ -15,12 +15,21 @@ export class ShippingService {
     return quotes.flat();
   }
 
-  /** Resolve a specific selected quote (server-authoritative price). */
-  async findQuote(request: ShippingRateRequest, provider: string, service: string): Promise<ShippingQuote> {
-    const quotes = await this.getQuotes(request);
+  /**
+   * Pick one selected service out of quotes that were ALREADY fetched for the
+   * same request. Split out of findQuote so a caller holding those quotes can
+   * reuse them instead of paying for a second courier round-trip; both paths
+   * therefore raise the identical "unavailable" error from one place.
+   */
+  selectQuote(quotes: ShippingQuote[], provider: string, service: string): ShippingQuote {
     const match = quotes.find((q) => q.provider === provider && q.service === service);
     if (!match) throw new BadRequestException('Selected shipping service is unavailable');
     return match;
+  }
+
+  /** Resolve a specific selected quote (server-authoritative price). */
+  async findQuote(request: ShippingRateRequest, provider: string, service: string): Promise<ShippingQuote> {
+    return this.selectQuote(await this.getQuotes(request), provider, service);
   }
 
   /**

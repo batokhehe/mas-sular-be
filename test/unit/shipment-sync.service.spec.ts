@@ -21,7 +21,9 @@ function shipment(status: ShipmentStatus) {
 
 function buildTx() {
   return {
-    shipment: { update: jest.fn().mockResolvedValue({}) },
+    // PAXELBOX-25: the transition is CAS-claimed via updateMany; count 1
+    // means this run won the claim and may record the rest.
+    shipment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     shipmentHistory: { create: jest.fn().mockResolvedValue({}) },
     order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     orderEvent: { create: jest.fn().mockResolvedValue({}) },
@@ -53,7 +55,7 @@ describe('ShipmentSyncService', () => {
     const changed = await service.syncAll();
 
     expect(changed).toBe(1);
-    expect(prisma.__tx.shipment.update.mock.calls[0][0].data.status).toBe(ShipmentStatus.DELIVERED);
+    expect(prisma.__tx.shipment.updateMany.mock.calls[0][0].data.status).toBe(ShipmentStatus.DELIVERED);
     expect(prisma.__tx.shipmentHistory.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ providerStatus: 'DELIVERED', mappedStatus: ShipmentStatus.DELIVERED }),

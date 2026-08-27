@@ -50,6 +50,22 @@ function mapStatus(raw: string | undefined, fallback: ShipmentStatus): ShipmentS
 @Injectable()
 export class JneShipmentProvider implements ShipmentProvider {
   readonly name = 'jne';
+
+  /**
+   * PAXELBOX-38: JNE is quoted through the application but booked outside it.
+   * The operator arranges the consignment with JNE and records the cnote by
+   * hand, so the generic booking flow must never call `createShipment` for this
+   * courier — see AWAITING_MANUAL_FULFILMENT in ShipmentService.
+   *
+   * `createShipment` below is deliberately KEPT rather than removed: the method
+   * is still a truthful implementation of the JNE contract, and `cancelShipment`
+   * and `trackShipmentRaw` beside it remain fully in use — tracking runs on
+   * whatever cnote the operator entered, and PAXELBOX-36's cancel endpoint calls
+   * into this class. Deleting the create path would not make fulfilment more
+   * manual; it would only make the integration incomplete if the arrangement
+   * ever changes back.
+   */
+  readonly supportsAutomaticBooking = false;
   private readonly logger = new Logger('JneShipmentProvider');
   private http: ShippingHttpClient = defaultShippingHttpClient;
 

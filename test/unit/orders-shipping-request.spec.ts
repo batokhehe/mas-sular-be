@@ -150,7 +150,9 @@ describe('OrdersService — PaxelBox reaches the real shipping request', () => {
     [1, 'S'], [3, 'S'],
     [4, 'M'], [10, 'M'],
     [11, 'L'], [20, 'L'],
-    [21, 'XL'], [100, 'XL'],
+    // PAXELBOX-17: these asserted 'XL'. XL is out of scope, so past L the
+    // request carries null and PaxelProvider offers nothing for the order.
+    [21, null], [100, null],
   ] as const)('total quantity %i -> PaxelBox %s on the outgoing request', async (qty, expected) => {
     const { service, shipping } = build(buildPrisma());
     await service.getShippingOptions(USER, { address_id: 'addr-1', items: [{ product_id: 'p1', qty }] } as never);

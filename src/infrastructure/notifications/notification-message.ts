@@ -7,6 +7,12 @@ export type NotificationTemplate =
   | 'order.shipped'
   | 'order.delivered'
   | 'shipment.status'
+  /**
+   * INTERNAL operational alert: a new order arrived and needs processing.
+   * Addressed to an operator (OPS_NOTIFICATION_WHATSAPP), never to a customer —
+   * it is not part of the customer shipment/payment notification family.
+   */
+  | 'order.new'
   // Admin-composed messages (Customer Communication Center). Same outbox +
   // sender-worker path as automatic notifications.
   | 'manual.order-update'
@@ -74,6 +80,18 @@ export type NotificationVariables =
       shippingProvider: string;
       shippingService: string;
       trackingNumber: string;
+    }
+  | {
+      template: 'order.new';
+      customerName: string;
+      orderNumber: string;
+      grandTotal: number;
+      /** "GATEWAY · PENDING" — method and payment state in one slot. */
+      paymentSummary: string;
+      /** "paxel · Paxel Instant" — provider and service in one slot. */
+      shippingSummary: string;
+      /** Deep link to the admin order-detail page; feeds the template button. */
+      adminOrderUrl: string;
     }
   | {
       template: ManualTemplate;

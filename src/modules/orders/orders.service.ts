@@ -140,9 +140,18 @@ export class OrdersService {
   private async resolveShippingQuote(
     dto: { courier: string; shipping_provider?: string; shipping_service?: string },
     request: ShippingRateRequest,
+    /**
+     * Quotes allocation already priced for THIS request, when it ran. Reusing
+     * them turns the selected-service lookup into a local find instead of a
+     * second fan-out across every courier service (4 more Paxel calls for one
+     * answer). Null on the legacy path, which still quotes on demand.
+     */
+    quotes?: ShippingQuote[] | null,
   ): Promise<ShippingQuote> {
     if (dto.shipping_provider && dto.shipping_service) {
-      return this.shipping.findQuote(request, dto.shipping_provider, dto.shipping_service);
+      return quotes
+        ? this.shipping.selectQuote(quotes, dto.shipping_provider, dto.shipping_service)
+        : this.shipping.findQuote(request, dto.shipping_provider, dto.shipping_service);
     }
     const rate = await this.shipping.calculateRateForCourier(dto.courier, request);
     return {
@@ -561,8 +570,10 @@ export class OrdersService {
 
     // Allocate the best outlet (multi-outlet) or fall back to the active outlet;
     // shipping is priced from that outlet's origin.
-    const { outletId, request } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(items, products));
-    const quote = await this.resolveShippingQuote(dto, request);
+    // `quotes` is what allocation already priced for this exact request; passing
+    // it through keeps the summary to one courier fan-out instead of two.
+    const { outletId, request, quotes } = await this.resolveOutletRequest(address, items, this.getShippingWeightGram(items, products));
+    const quote = await this.resolveShippingQuote(dto, request, quotes);
     const deliveryFee = quote.shippingCost;
 
     let voucher: Promo | null = null;

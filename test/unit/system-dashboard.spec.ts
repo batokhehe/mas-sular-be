@@ -40,9 +40,32 @@ function svc() {
 }
 
 describe('SystemDashboardService.compute', () => {
-  const prev = process.env.PAYMENT_LIFECYCLE_ENABLED;
-  beforeAll(() => { process.env.PAYMENT_LIFECYCLE_ENABLED = 'true'; });
-  afterAll(() => { if (prev === undefined) delete process.env.PAYMENT_LIFECYCLE_ENABLED; else process.env.PAYMENT_LIFECYCLE_ENABLED = prev; });
+  // Worker rows are derived from ambient environment variables, so every flag
+  // this block asserts on is pinned here and restored afterwards. Previously
+  // only PAYMENT_LIFECYCLE_ENABLED was pinned and the shipment-tracking
+  // assertion silently relied on the var being unset — which made the suite
+  // fail the moment tracking was switched on in configuration.
+  const ENV_UNDER_TEST: Record<string, string> = {
+    PAYMENT_LIFECYCLE_ENABLED: 'true',
+    // The intended production configuration: tracking is ON.
+    SHIPMENT_TRACKING_ENABLED: 'true',
+    // Held OFF so the disabled/gray rendering path stays covered by a worker
+    // that is genuinely disabled, rather than by an accident of the .env file.
+    SHIPMENT_RECONCILIATION_ENABLED: 'false',
+  };
+  const prev: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    for (const [key, value] of Object.entries(ENV_UNDER_TEST)) {
+      prev[key] = process.env[key];
+      process.env[key] = value;
+    }
+  });
+  afterAll(() => {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
 
   it('summary: request count, avg response, error rate, warnings/errors', async () => {
     const d = await svc().service.compute();
@@ -88,8 +111,13 @@ describe('SystemDashboardService.compute', () => {
     const pl = d.workerMetrics.find((w) => w.key === 'payment-lifecycle');
     expect(pl).toMatchObject({ enabled: true, running: true, status: 'green', success: 20, failure: 1, avgMs: 15 });
     expect(d.summary.activeWorkers).toBeGreaterThanOrEqual(1);
-    // A disabled worker (env unset) is gray + not running.
-    const disabled = d.workerMetrics.find((w) => w.key === 'shipment-tracking');
+    // Tracking is ENABLED in the intended configuration. This fixture logs no
+    // tracking tick, so it is enabled-but-not-yet-observed: running false and
+    // yellow (a warning), which is distinct from a disabled worker's gray.
+    const tracking = d.workerMetrics.find((w) => w.key === 'shipment-tracking');
+    expect(tracking).toMatchObject({ enabled: true, running: false, status: 'yellow' });
+    // A genuinely disabled worker is gray + not running.
+    const disabled = d.workerMetrics.find((w) => w.key === 'shipment-reconciliation');
     expect(disabled).toMatchObject({ enabled: false, running: false, status: 'gray' });
   });
 });

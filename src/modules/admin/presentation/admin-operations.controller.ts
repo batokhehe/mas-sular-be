@@ -8,6 +8,7 @@ import { PermissionGuard } from '../../../common/guards/permission.guard';
 import { AdminService } from '../admin.service';
 import { ExecutiveDashboardService } from '../executive-dashboard.service';
 import { AdminOrderNotesService } from '../admin-order-notes.service';
+import { ShipmentService } from '../../shipment/shipment.service';
 import {
   CreateShipmentDto,
   ListAdminOrdersQueryDto,
@@ -30,6 +31,9 @@ export class AdminOperationsController {
     private readonly adminService: AdminService,
     private readonly executiveDashboard: ExecutiveDashboardService,
     private readonly orderNotes: AdminOrderNotesService,
+    // Cancellation talks to the courier, which is ShipmentService's job — the
+    // same collaborator the retry and prepare actions already go through.
+    private readonly shipments: ShipmentService,
   ) {}
 
   @Permissions('Dashboard.read')
@@ -150,6 +154,27 @@ export class AdminOperationsController {
   @Patch('shipments/:id')
   updateShipment(@Param('id') id: string, @Body() dto: UpdateShipmentDto) {
     return this.adminService.updateShipment(id, dto);
+  }
+
+  /**
+   * Cancel the courier booking, then record it locally.
+   *
+   * A separate endpoint from PATCH on purpose: this one leaves the application
+   * and changes something in the outside world, so it must be asked for
+   * explicitly rather than falling out of a status field on an edit form. It
+   * takes no body — the courier handle is read from the persisted shipment, so
+   * no caller can direct the cancellation at some other parcel.
+   *
+   * `Shipment.update` rather than `Shipment.delete`: this is an operational
+   * state change, not a deletion, and the row survives it. It also grants no
+   * new authority — anyone who can already reach PATCH could already set the
+   * status to CANCELLED by hand; this gives them the version that actually
+   * tells the courier.
+   */
+  @Permissions('Shipment.update')
+  @Post('shipments/:id/cancel')
+  cancelShipment(@Param('id') id: string) {
+    return this.shipments.cancelForShipment(id);
   }
 
   @Permissions('Shipment.delete')

@@ -4,6 +4,11 @@ import { PaymentAccountsModule } from '../../modules/payment-accounts/payment-ac
 import { PaymentAccountService } from '../../modules/payment-accounts/payment-account.service';
 import { ACTIVE_PAYMENT_ACCOUNT_SOURCE } from './active-payment-account.source';
 import { EmailNotificationProvider } from './email-notification.provider';
+import {
+  NOTIFICATION_DELIVERY_CONFIG,
+  NotificationDeliveryGate,
+  loadNotificationDeliveryConfig,
+} from './notification-delivery.gate';
 import { NOTIFICATION_SENDER_CONFIG, loadNotificationSenderConfig } from './notification.config';
 import { NotificationMessageBuilder } from './notification-message.builder';
 import { NotificationMetrics } from './notification.metrics';
@@ -19,6 +24,8 @@ import { TemplateRenderer } from './template-renderer';
   providers: [
     { provide: NOTIFICATION_SENDER_CONFIG, useFactory: () => loadNotificationSenderConfig() },
     { provide: QONTAK_CONFIG, useFactory: () => loadQontakConfig() },
+    { provide: NOTIFICATION_DELIVERY_CONFIG, useFactory: () => loadNotificationDeliveryConfig() },
+    NotificationDeliveryGate,
     // Narrow port: the builder depends only on getActiveAccount(), implemented by the service.
     { provide: ACTIVE_PAYMENT_ACCOUNT_SOURCE, useExisting: PaymentAccountService },
     NotificationMetrics,

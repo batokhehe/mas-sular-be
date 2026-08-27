@@ -77,9 +77,13 @@ export class QontakWhatsAppProvider implements NotificationProvider {
       return { key: p.key, value_text: text, value: p.valueName };
     });
 
+    // The button's URL slot is fed by whichever variable the descriptor names.
+    // Defaults to uploadToken so templates registered before buttonSource
+    // existed behave exactly as they did.
+    const buttonValue = vars[descriptor.buttonSource ?? 'uploadToken'];
     const buttons =
-      descriptor.button && typeof vars.uploadToken === 'string'
-        ? [{ index: '0', type: 'url', value: vars.uploadToken as string }]
+      descriptor.button && typeof buttonValue === 'string' && buttonValue.length > 0
+        ? [{ index: '0', type: 'url', value: buttonValue }]
         : undefined;
 
     const payload = {

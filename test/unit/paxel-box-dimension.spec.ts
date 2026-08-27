@@ -54,10 +54,22 @@ describe('paxelBoxRateDimension — the box → RATE dimension mapping', () => {
       [1, '12x48x48'], [3, '12x48x48'],
       [4, '24x48x48'], [10, '24x48x48'],
       [11, '36x48x48'], [20, '36x48x48'],
-      [21, '59x48x48'], [100, '59x48x48'],
     ];
     for (const [quantity, expected] of cases) {
-      expect(paxelBoxRateDimension(selectPaxelBox(quantity))).toBe(expected);
+      const box = selectPaxelBox(quantity);
+      // Narrowing, not an assertion: a selectable quantity always has a box.
+      if (box === null) throw new Error(`expected a box for quantity ${quantity}`);
+      expect(paxelBoxRateDimension(box)).toBe(expected);
+    }
+  });
+
+  // PAXELBOX-17: this used to assert 21 -> '59x48x48'. That encoded the very
+  // defect the audit found — XL is out of scope, so >20 has no box and there is
+  // no dimension to build. The XL dimension itself is still exercised above as
+  // reference data; what changed is that selection can no longer reach it.
+  it('builds no dimension past L, because >20 has no supported box', () => {
+    for (const quantity of [21, 22, 50, 100]) {
+      expect(selectPaxelBox(quantity)).toBeNull();
     }
   });
 });

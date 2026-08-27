@@ -92,6 +92,20 @@ export interface ShipmentProvider {
    * Optional so existing providers keep their current behaviour.
    */
   readonly requiresPickupSchedule?: boolean;
+  /**
+   * False when this courier is NOT booked through the API — the airwaybill is
+   * arranged outside the application and an operator records it by hand.
+   *
+   * A property of the integration, not of the environment: JNE fulfilment is
+   * manual as a business arrangement, so this is declared on the provider
+   * alongside `requiresPickupSchedule` rather than hidden behind a flag someone
+   * could flip on. Quotation, tracking and cancellation are unaffected — this
+   * governs `createShipment` only.
+   *
+   * Optional, and absent means TRUE, so every existing provider keeps booking
+   * automatically without being touched.
+   */
+  readonly supportsAutomaticBooking?: boolean;
   createShipment(input: CreateShipmentInput): Promise<CreateShipmentResult>;
   cancelShipment(providerShipmentId: string): Promise<void>;
   trackShipment(trackingNumber: string): Promise<ShipmentTrackingResult>;

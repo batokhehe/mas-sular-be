@@ -1,10 +1,13 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { ConflictException, Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import type { Cache } from 'cache-manager';
 import { NotificationChannel, OrderStatus, Prisma, ShipmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { orderStatusSourcesFor } from '../orders/domain/order-status-transitions';
 import { CreateShipmentInput, ShipmentItem } from './domain/shipment-provider.interface';
 import { ShipmentProviderFactory } from './shipment-provider.factory';
+import { trackingCacheKey } from './shipment-sync.service';
 import { readPickupDatetime, readShipmentMetadata, withPickupDatetime } from './shipment-metadata';
 
 /** Region names only; ids mean nothing to a courier. */
@@ -37,6 +40,14 @@ export const BOOKING_IN_PROGRESS = 'Shipment booking already in progress';
  */
 export const AWAITING_PICKUP_SCHEDULE = 'Awaiting admin-selected pickup schedule';
 
+/**
+ * PAXELBOX-38: the courier is quoted through the application but booked outside
+ * it, so there is no airwaybill to fetch — an operator records the one they
+ * arranged. Not a failure: the shipment is left exactly as it was, for the
+ * manual admin flow to complete.
+ */
+export const AWAITING_MANUAL_FULFILMENT = 'Awaiting manual courier booking (admin enters the airwaybill)';
+
 export interface ShipmentOutcome {
   ok: boolean;
   status: ShipmentStatus;
@@ -55,6 +66,10 @@ export class ShipmentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly factory: ShipmentProviderFactory,
+    // PAXELBOX-36: drops the cached courier answer after a cancellation.
+    // Optional so the many positional test constructions keep working, and safe
+    // to be absent — invalidation is best-effort, never a guard.
+    @Optional() @Inject(CACHE_MANAGER) private readonly cache?: Cache,
   ) {}
 
   private toNum(v: unknown): number | undefined {
@@ -110,6 +125,19 @@ export class ShipmentService {
     const provider = this.factory.get(providerName);
     if (!provider) {
       throw new Error(`No shipment provider registered for '${providerName}'`);
+    }
+
+    // Some couriers are quoted here but booked outside the application (JNE).
+    // Checked before ANYTHING else touches the row — before the outlet lookup,
+    // the address checks and the CAS claim — so a manual-fulfilment order is
+    // never claimed, never attempted and never marked FAILED. It simply waits
+    // for the operator to record the airwaybill they arranged.
+    //
+    // This is the ONLY thing standing between the generic booking flow and a
+    // JNE CREATE call, and it covers every caller of createForOrder at once:
+    // payment verification, admin retry and the reconciliation worker.
+    if (provider.supportsAutomaticBooking === false) {
+      return { ok: false, status: shipment.status, error: AWAITING_MANUAL_FULFILMENT };
     }
 
     // Origin = the outlet allocated at checkout (order.outletId); fall back to the
@@ -322,6 +350,92 @@ export class ShipmentService {
   }
 
   /**
+   * Admin operational action: cancel the booking WITH THE COURIER, then record it.
+   *
+   * Both providers have implemented `cancelShipment` since the shipment module
+   * was written, but nothing ever called it — which is why `deleteShipment`
+   * refuses a booked shipment ("there is no in-app way to undo the booking
+   * first") and why an operator's only recourse was to hand-edit the status,
+   * leaving the parcel live at the courier. This is that missing call.
+   *
+   * The courier goes FIRST and the local row is only touched once it accepted.
+   * A cancellation the courier did not accept must never be recorded as one:
+   * that is exactly the failure mode — a row saying CANCELLED while a real
+   * parcel is still moving — that this endpoint exists to prevent.
+   *
+   * Deliberately NOT decided here (PAXELBOX-35 product decisions): Order.status
+   * is untouched, no OrderEvent, no customer notification. This records that the
+   * booking was withdrawn; what that means for the order and the customer is a
+   * separate question with no repository evidence behind it yet.
+   */
+  async cancelForShipment(shipmentId: string): Promise<ShipmentOutcome> {
+    const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+    if (!shipment) throw new NotFoundException('Shipment not found');
+
+    // Already withdrawn: report the existing state and make no courier call.
+    // Mirrors the idempotent no-op that guards admin order-status updates.
+    if (shipment.status === ShipmentStatus.CANCELLED) {
+      return { ok: true, status: shipment.status, trackingNumber: shipment.trackingNumber ?? undefined };
+    }
+
+    // The provider contract cancels BY the courier's own handle. For both
+    // providers that handle is what create returned (Paxel airwaybill_code,
+    // JNE cnote_no), persisted here. Nothing else may stand in for it, and an
+    // admin can never supply one — it is read from the row.
+    const providerShipmentId = shipment.providerShipmentId;
+    if (!providerShipmentId) {
+      throw new ConflictException(
+        'This shipment has no courier booking to cancel (no providerShipmentId). ' +
+          'An unbooked draft can simply be deleted.',
+      );
+    }
+
+    const provider = this.factory.get(shipment.provider);
+    if (!provider) {
+      // Same data defect the tracking worker reports: nothing in this build can
+      // talk to that courier, so cancelling in-app is impossible.
+      throw new ConflictException(
+        `No provider registered for "${shipment.provider}"; this booking cannot be cancelled from the application.`,
+      );
+    }
+
+    // Whether a courier will cancel a parcel that is already picked up or in
+    // transit is the COURIER's rule, not one this repository states anywhere.
+    // Rather than invent a local status matrix, the request is made and a
+    // refusal propagates: executeShippingRequest raises PermanentError on 4xx
+    // and TransientError on 5xx/timeout, and neither is swallowed.
+    await provider.cancelShipment(providerShipmentId);
+
+    const updated = await this.prisma.shipment.update({
+      where: { id: shipment.id },
+      data: { status: ShipmentStatus.CANCELLED },
+    });
+
+    // The courier's last answer is now stale by definition.
+    await this.invalidateTrackingCache(shipment.provider, shipment.trackingNumber);
+
+    this.logger.log({
+      event: 'shipment.cancelled',
+      shipmentId: shipment.id,
+      orderId: shipment.orderId,
+      provider: shipment.provider,
+      previousStatus: shipment.status,
+    });
+
+    return { ok: true, status: updated.status, trackingNumber: updated.trackingNumber ?? undefined };
+  }
+
+  /** Best-effort: a cache fault must never make a successful cancellation look failed. */
+  private async invalidateTrackingCache(provider: string, trackingNumber: string | null): Promise<void> {
+    if (!this.cache || !trackingNumber) return;
+    try {
+      await this.cache.del(trackingCacheKey(provider, trackingNumber));
+    } catch {
+      // The courier has already cancelled; a stale cache entry cannot undo that.
+    }
+  }
+
+  /**
    * Background poll: advance non-terminal shipments by querying the courier, update
    * shipment + order status, and notify on delivery. Returns the number updated.
    */
@@ -359,7 +473,13 @@ export class ShipmentService {
               });
               await this.enqueueWhatsApp(tx, 'order.delivered', shipment.order, {
                 provider: shipment.provider,
-                service: shipment.service,
+                // Same precedence as order.shipped above: the label the customer
+                // was quoted, then the paid code, and only then the shipment's
+                // own snapshot. Shipment.service is a record, not the authority.
+                service:
+                  shipment.order.shippingServiceName ??
+                  shipment.order.shippingService ??
+                  shipment.service,
                 tracking: shipment.trackingNumber ?? '',
               });
             }

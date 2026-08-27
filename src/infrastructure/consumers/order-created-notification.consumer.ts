@@ -152,6 +152,21 @@ export class OrderCreatedNotificationConsumer implements OnApplicationBootstrap,
     }
   }
 
+  /**
+   * Deep link to the admin order-detail page.
+   *
+   * The route is `/orders/:id` and it is keyed by Order.id — the admin page
+   * reads `params.id` straight into `GET /admin/orders/:id`, which does
+   * `findUnique({ where: { id } })`. orderNumber is NOT accepted there.
+   *
+   * Returns '' when ADMIN_URL is unset; the provider then simply omits the
+   * button rather than sending a broken link.
+   */
+  private adminOrderUrl(orderId: string): string {
+    const base = this.config.adminUrl?.replace(/\/+$/, '');
+    return base ? `${base}/orders/${orderId}` : '';
+  }
+
   /** Dedup + enqueue. ProcessedEvent insert shares the tx → exactly-once enqueue. */
   async process(messageId: string, event: { name?: string; payload?: Record<string, unknown> }): Promise<ProcessOutcome> {
     const seen = await this.prisma.processedEvent.findUnique({
@@ -170,6 +185,8 @@ export class OrderCreatedNotificationConsumer implements OnApplicationBootstrap,
       include: {
         user: { select: { email: true, name: true, phone: true } },
         address: { select: { phone: true } },
+        // Payment state for the internal alert's "Pembayaran" line.
+        payment: { select: { status: true } },
       },
     });
     if (!order || !order.user) {
@@ -208,6 +225,41 @@ export class OrderCreatedNotificationConsumer implements OnApplicationBootstrap,
             sourceMessageId: messageId,
           },
         });
+        // PAXELBOX-37: the INTERNAL "new order arrived" alert, enqueued in the
+        // same transaction so an operator alert can never exist without the
+        // customer row that caused it (or vice versa).
+        //
+        // Deliberately a SECOND outbox row rather than an extra recipient on the
+        // customer message: different template, different audience, and it must
+        // be independently visible, retryable and gate-checked. It is skipped
+        // silently when no operator number is configured, exactly as the admin
+        // email events already skip on a missing ADMIN_NOTIFICATION_EMAIL.
+        const opsPhone = this.config.opsNotificationWhatsapp;
+        if (opsPhone) {
+          await tx.notificationOutbox.create({
+            data: {
+              channel: NotificationChannel.WHATSAPP,
+              recipient: opsPhone,
+              template: 'order.new',
+              payload: {
+                orderId,
+                orderNumber: order.orderNumber,
+                customerName: order.user!.name,
+                grandTotal: order.totalPrice,
+                paymentSummary: `${order.paymentMethod} · ${order.payment?.status ?? 'PENDING'}`,
+                shippingSummary: [order.shippingProvider, order.shippingServiceName ?? order.shippingService]
+                  .filter(Boolean)
+                  .join(' · '),
+                adminOrderUrl: this.adminOrderUrl(orderId),
+                // Marks the audience explicitly so this row can never be mistaken
+                // for a customer message by anything reading the outbox.
+                audience: 'internal',
+              },
+              // Distinct from the customer row's key so the two never collide.
+              sourceMessageId: `${messageId}:ops`,
+            },
+          });
+        }
         await tx.processedEvent.create({
           data: { consumer: CONSUMER, messageId, eventName: event.name ?? 'order.created' },
         });

@@ -10,7 +10,10 @@ import {
  * PaxelBox selection — a FIXED business rule keyed on TOTAL PRODUCT QUANTITY
  * only. SKU, product dimensions, volume and weight are deliberately irrelevant.
  *
- *   1-3 -> S    4-10 -> M    11-20 -> L    >20 -> XL
+ *   1-3 -> S    4-10 -> M    11-20 -> L    >20 -> UNSUPPORTED (null)
+ *
+ * XL is out of scope, so past L there is no box at all - selection returns
+ * null rather than falling through to a carton the business does not ship.
  *
  * The boundaries are the whole point, so every edge is pinned on both sides:
  * an off-by-one here silently ships the wrong carton.
@@ -27,19 +30,30 @@ describe('selectPaxelBox — boundaries', () => {
     [11, 'L'],
     [12, 'L'],
     [20, 'L'],
-    [21, 'XL'],
-    [22, 'XL'],
-    [100, 'XL'],
-  ] as Array<[number, PaxelBoxSize]>)('%i pcs -> %s', (quantity, expected) => {
+    // PAXELBOX-17: these asserted 'XL'. XL is out of scope, so >20 has no box.
+    [21, null],
+    [22, null],
+    [100, null],
+  ] as Array<[number, PaxelBoxSize | null]>)('%i pcs -> %s', (quantity, expected) => {
     expect(selectPaxelBox(quantity)).toBe(expected);
+  });
+
+  it.each([21, 22, 50, 100])('%i pcs is never silently downgraded or sent as XL', (quantity) => {
+    const box = selectPaxelBox(quantity);
+    expect(box).toBeNull();
+    expect(box).not.toBe('XL');
+    expect(box).not.toBe('S');
+    expect(box).not.toBe('M');
+    expect(box).not.toBe('L');
   });
 
   // The four transitions, stated as pairs so a shifted threshold cannot pass.
   it.each([
     [3, 'S', 4, 'M'],
     [10, 'M', 11, 'L'],
-    [20, 'L', 21, 'XL'],
-  ] as Array<[number, PaxelBoxSize, number, PaxelBoxSize]>)(
+    // The last band edge: L is the final box, and past it there is none.
+    [20, 'L', 21, null],
+  ] as Array<[number, PaxelBoxSize, number, PaxelBoxSize | null]>)(
     'the boundary between %i (%s) and %i (%s) is exact',
     (lastQty, lastBox, firstQty, firstBox) => {
       expect(selectPaxelBox(lastQty)).toBe(lastBox);
@@ -52,7 +66,8 @@ describe('selectPaxelBox — boundaries', () => {
     expect(sizes.slice(0, 3)).toEqual(['S', 'S', 'S']);
     expect(sizes.slice(3, 10)).toEqual(Array(7).fill('M'));
     expect(sizes.slice(10, 20)).toEqual(Array(10).fill('L'));
-    expect(sizes.slice(20)).toEqual(Array(40).fill('XL'));
+    // Past 20 the rule defines no box, so every remaining slot is null.
+    expect(sizes.slice(20)).toEqual(Array(40).fill(null));
   });
 });
 
