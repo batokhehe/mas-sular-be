@@ -59,6 +59,10 @@ function sanitize(text: string): string {
  * Execute a shipping HTTP request with timeout, in-call retry, error
  * classification, and secret-free logging. Returns the raw response body text on
  * success; throws TransientError (network/timeout/5xx/429) or PermanentError (4xx).
+ *
+ * Retryable: network/timeout errors and 5xx.
+ * NOT retryable: 429 (transient, but retrying spends more of the exhausted
+ * quota) and every other 4xx (permanent).
  */
 export async function executeShippingRequest(opts: ShippingRequestOptions): Promise<{ status: number; text: string }> {
   const { http, url, init, maxRetry, logger, logBase } = opts;
@@ -85,13 +89,36 @@ export async function executeShippingRequest(opts: ShippingRequestOptions): Prom
       return { status: res.status, text };
     }
 
-    if (res.status >= 500 || res.status === 429) {
+    // 429 is TRANSIENT but NOT retryable here. A courier that answers "too many
+    // requests" is telling us the quota is already spent; retrying immediately
+    // spends `maxRetry` more requests of that same quota to be told the same
+    // thing (RajaOngkir returns `{"meta":{"message":"Daily limit exceeded"}}` —
+    // no amount of retrying inside one call makes a daily quota reset). The
+    // error CLASS is deliberately unchanged: 429 stays a TransientError, so
+    // every caller's classification, logging and recovery behaviour is exactly
+    // what it was. Only the in-call retry loop is skipped.
+    //
+    // No Retry-After is read: the shipping stack has no such abstraction today
+    // and inventing one here would exceed this fix (see PAXELBOX-45A Part 6).
+    if (res.status === 429) {
+      logger.warn({
+        ...logBase,
+        attempt,
+        outcome: 'failed',
+        errorClass: 'rate_limited',
+        status: res.status,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw new TransientError(`provider ${res.status}: ${sanitize(text)}`, logBase.provider);
+    }
+
+    if (res.status >= 500) {
       lastTransient = new TransientError(`provider ${res.status}: ${sanitize(text)}`, logBase.provider);
       logger.warn({
         ...logBase,
         attempt,
         outcome: 'retry',
-        errorClass: res.status === 429 ? 'rate_limited' : 'provider_5xx',
+        errorClass: 'provider_5xx',
         status: res.status,
         elapsedMs: Date.now() - startedAt,
       });
