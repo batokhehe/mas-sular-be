@@ -107,18 +107,20 @@ describe('the CLI consumes the hardened planner', () => {
     expect(out()).toContain(formatPlan(buildSearchPlan(VILLAGES, { reviewedAliases: {} })));
   });
 
-  it('plans 21 executable and 9 review-required units for Kota Bandung', async () => {
+  it('plans 30 districts: 21 executable district units, 9 review-required', async () => {
     await dryRun();
     expect(out()).toContain('districts=30');
-    expect(out()).toContain('executable=21');
+    // 21 district units + the one measured Braga VILLAGE_TOKEN unit.
+    expect(out()).toContain('executable=22');
     expect(out()).toContain('review_required=9');
+    expect(out()).toContain('village_token=1');
   });
 
   it('does not use the legacy district-name-as-term behaviour', async () => {
     await dryRun();
     // The legacy planner made a unit for EVERY district, including multi-word
     // ones. The hardened path must not.
-    expect(out()).toContain('21 executable unit(s) planned');
+    expect(out()).toContain('22 executable unit(s) planned');
     expect(out()).not.toContain('30 executable unit(s) planned');
   });
 });
@@ -200,10 +202,13 @@ describe('every district stays represented', () => {
     for (const [district] of DISTRICT_VILLAGES) expect(out()).toContain(district);
   });
 
-  it('executable + review_required = 30', () => {
+  it('all 30 districts stay represented, and village-token units are additive', () => {
     const plan = buildSearchPlan(VILLAGES);
-    expect(plan.units.length + plan.review.length).toBe(30);
-    expect(plan.all).toHaveLength(30);
+    expect(plan.districts).toBe(30);
+    expect(plan.units.length + plan.review.length).toBe(plan.all.length);
+    // 30 district units + 1 measured village-token unit.
+    expect(plan.all).toHaveLength(31);
+    expect(plan.villageTokenUnits).toHaveLength(1);
   });
 
   it('the CLI refuses to proceed if that invariant is ever violated', async () => {

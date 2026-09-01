@@ -94,7 +94,8 @@ export function parseVillages(raw: unknown): MassularVillage[] {
  */
 export function formatPlan(plan: ReturnType<typeof buildSearchPlan>): string {
   const lines = [
-    `districts=${plan.all.length}  executable=${plan.units.length}  review_required=${plan.review.length}  ` +
+    `districts=${plan.districts}  units=${plan.all.length}  executable=${plan.units.length}  ` +
+      `review_required=${plan.review.length}  village_token=${plan.villageTokenUnits.length}  ` +
       `limit=${plan.limit}  maxPages=${plan.maxPages}`,
     `totalPlannedRequests=${plan.totalPlannedRequests}  worstCaseRequests=${plan.worstCaseRequests}`,
     '',

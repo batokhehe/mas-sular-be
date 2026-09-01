@@ -201,7 +201,98 @@ export const GENERIC_TOKENS = [
   'KULON', 'WETAN', 'KIDUL', 'KALER', 'UTARA', 'SELATAN', 'TIMUR', 'BARAT', 'TENGAH',
 ] as const;
 
-export type PlanStrategy = 'SINGLE_TOKEN_DISTRICT' | 'REVIEWED_ALIAS' | 'REVIEW_REQUIRED';
+// ------------------------------------- VILLAGE_TOKEN (PAXELBOX-60L)
+
+/**
+ * PAXELBOX-60L: a village-name search term that has been MEASURED.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A LIST OF MEASUREMENTS AND NOT A RULE
+ *
+ * PAXELBOX-60K searched "Braga" and got one row back. It would be very easy to
+ * read that as "village names are safe search terms" — and wrong. Braga is an
+ * unusually favourable case: exactly one place in Indonesia carries the name.
+ * The same repository already contains the counter-examples, from searches we
+ * actually ran: "Sukajadi" returned 57 rows over 3 pages, and inside the
+ * "Babakan Ciparay" result the token BABAKAN appeared in 79 of 96 rows. Names
+ * like Merdeka, Sukamaju, Neglasari and Cicadas are common, and two of those
+ * are already known to collide with places outside Bandung.
+ *
+ * So a term earns EXECUTABLE only by having been searched, with the row and
+ * page counts recorded here. One measurement promotes one term — never a class.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS DOES NOT DO
+ *
+ * A village token resolves the VILLAGE it names, not the district around it.
+ * Sumur Bandung's other open villages (Merdeka, Kebon Pisang) are untouched by
+ * the Braga entry, and its district stays REVIEW_REQUIRED for exactly that
+ * reason.
+ */
+export interface VillageTokenEvidence {
+  /** The exact term searched. */
+  searchTerm: string;
+  /** Massular district the term targets. */
+  massularDistrict: string;
+  /** Massular village(s) the measurement resolved. */
+  massularVillages: string[];
+  /** Measured: rows returned, pages walked, and the limit they were measured at. */
+  measuredRows: number;
+  measuredPages: number;
+  measuredLimit: number;
+  /** Destination id(s) the measurement identified. */
+  destinationIds: number[];
+  /** Postal code(s) both sides agreed on. */
+  postalCodes: string[];
+  rajaOngkirDistrict: string;
+  rajaOngkirVillage: string;
+  /** The phase that performed the measurement. */
+  evidenceSource: string;
+}
+
+/**
+ * Measured village tokens. EXACTLY ONE entry — everything else stays review-only.
+ */
+export const VALIDATED_VILLAGE_TOKENS: VillageTokenEvidence[] = [
+  {
+    searchTerm: 'Braga',
+    massularDistrict: 'Sumur Bandung',
+    massularVillages: ['Braga'],
+    measuredRows: 1,
+    measuredPages: 1,
+    measuredLimit: 20,
+    destinationIds: [4949],
+    postalCodes: ['40111'],
+    rajaOngkirDistrict: 'SUMUR BANDUNG',
+    rajaOngkirVillage: 'BRAGA',
+    evidenceSource: 'PAXELBOX-60K',
+  },
+];
+
+/**
+ * Why a measurement is or is not sufficient to execute.
+ *
+ * `measuredRows < measuredLimit` is the load-bearing clause: it is the same
+ * short-page rule the runner uses, and it is the only evidence that a result
+ * set actually terminated. A measurement that filled its page proves nothing.
+ */
+export function villageTokenProblems(e: VillageTokenEvidence): string[] {
+  const problems: string[] = [];
+  if (!e.searchTerm.trim()) problems.push('search term is blank');
+  if (!e.massularDistrict.trim()) problems.push('no target district');
+  if (e.massularVillages.length === 0) problems.push('no target village');
+  if (e.destinationIds.length === 0) problems.push('no destination id was identified');
+  if (e.postalCodes.length === 0) problems.push('no postal agreement recorded');
+  if (!e.rajaOngkirDistrict.trim() || !e.rajaOngkirVillage.trim()) problems.push('measurement does not name the RajaOngkir row');
+  if (!e.evidenceSource.trim()) problems.push('no evidence source');
+  if (e.measuredLimit <= 0 || e.measuredPages <= 0) problems.push('measurement is incomplete');
+  else if (e.measuredRows >= e.measuredLimit) {
+    problems.push(`measured ${e.measuredRows} rows at limit ${e.measuredLimit}: the page was full, so the result set was never proven bounded`);
+  }
+  return problems;
+}
+
+export type PlanStrategy = 'SINGLE_TOKEN_DISTRICT' | 'REVIEWED_ALIAS' | 'VILLAGE_TOKEN' | 'REVIEW_REQUIRED';
 
 /** How a unit is allowed to be declared finished. Never "one page came back". */
 export type CompletionCondition = 'SHORT_PAGE' | 'EMPTY_404' | 'PAGE_CEILING' | 'REVIEW_REQUIRED';
@@ -224,6 +315,10 @@ export interface PlannedSearchUnit {
   knownEvidence?: string;
   requiresReview: boolean;
   villages: number;
+  /** VILLAGE_TOKEN units only: the measurement that made this term executable. */
+  evidence?: VillageTokenEvidence;
+  /** VILLAGE_TOKEN units only: the Massular villages this term is known to resolve. */
+  targetVillages?: string[];
   /**
    * A PROPOSAL only, never executed by this plan. Present when every village in
    * a REVIEW_REQUIRED district has a single-token name, so a village-level run
@@ -242,6 +337,10 @@ export interface SearchPlan {
   all: PlannedSearchUnit[];
   limit: number;
   maxPages: number;
+  /** Districts represented. Always every district in the input — never fewer. */
+  districts: number;
+  /** Executable VILLAGE_TOKEN units, a subset of `units`. */
+  villageTokenUnits: PlannedSearchUnit[];
   /** Always UNKNOWN: no total-count metadata exists, so real cost is unprovable. */
   totalPlannedRequests: 'UNKNOWN';
   /** The only figure the plan can prove: units x ceiling. */
@@ -252,6 +351,8 @@ export interface SearchPlanOptions {
   limit?: number;
   maxPages?: number;
   baseUrl?: string;
+  /** Overridden only by tests; production uses VALIDATED_VILLAGE_TOKENS. */
+  villageTokens?: VillageTokenEvidence[];
   /**
    * Massular district name -> reviewed RajaOngkir spelling. EMPTY by default.
    * This planner never authors an entry; it only consumes ones a human wrote.
@@ -352,13 +453,64 @@ export function buildSearchPlan(villages: MassularVillage[], options: SearchPlan
     return executable(name, 'SINGLE_TOKEN_DISTRICT', 'district name is a single, non-generic token');
   });
 
-  const units = all.filter((u) => !u.requiresReview);
+  // VILLAGE_TOKEN units are ADDITIVE. They never replace a district unit, and a
+  // district stays REVIEW_REQUIRED even when one of its villages has a measured
+  // token — the token resolves that village, not the district around it.
+  const villageTokenUnits: PlannedSearchUnit[] = [];
+  const districtNames = new Set(districts.map((d) => normalizeName(d)));
+  for (const e of options.villageTokens ?? VALIDATED_VILLAGE_TOKENS) {
+    // Only plan tokens whose district is actually in this scope.
+    if (!districtNames.has(normalizeName(e.massularDistrict))) continue;
+
+    const problems = villageTokenProblems(e);
+    const base = {
+      unitId: `village-${slug(e.searchTerm)}`,
+      massularDistrict: e.massularDistrict,
+      limit,
+      maxPages,
+      expectedPages: 'UNKNOWN' as const,
+      villages: e.massularVillages.length,
+      targetVillages: [...e.massularVillages],
+      evidence: e,
+    };
+
+    if (problems.length > 0) {
+      villageTokenUnits.push({
+        ...base,
+        searchTerm: null,
+        strategy: 'REVIEW_REQUIRED',
+        expectedCompletion: ['REVIEW_REQUIRED'],
+        risk: 'UNKNOWN',
+        reason: `village token "${e.searchTerm}" is not executable: ${problems.join('; ')}`,
+        requiresReview: true,
+      });
+      continue;
+    }
+
+    villageTokenUnits.push({
+      ...base,
+      searchTerm: e.searchTerm,
+      strategy: 'VILLAGE_TOKEN',
+      expectedCompletion: ['SHORT_PAGE', 'EMPTY_404', 'PAGE_CEILING'],
+      risk: 'LOW',
+      reason: `measured in ${e.evidenceSource}: ${e.measuredRows} row(s) over ${e.measuredPages} page(s) at limit ${e.measuredLimit}`,
+      knownEvidence:
+        `${e.evidenceSource}: "${e.searchTerm}" -> ${e.rajaOngkirDistrict} | ${e.rajaOngkirVillage} ` +
+        `id ${e.destinationIds.join(',')} postal ${e.postalCodes.join(',')}`,
+      requiresReview: false,
+    });
+  }
+
+  const everything = [...all, ...villageTokenUnits];
+  const units = everything.filter((u) => !u.requiresReview);
   return {
     units,
-    review: all.filter((u) => u.requiresReview),
-    all,
+    review: everything.filter((u) => u.requiresReview),
+    all: everything,
     limit,
     maxPages,
+    districts: districts.length,
+    villageTokenUnits: villageTokenUnits.filter((u) => !u.requiresReview),
     totalPlannedRequests: 'UNKNOWN',
     worstCaseRequests: units.length * maxPages,
   };

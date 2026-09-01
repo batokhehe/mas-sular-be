@@ -257,14 +257,19 @@ describe('determinism and coverage', () => {
     const plan = buildSearchPlan(KOTA_BANDUNG);
     const districts = new Set(KOTA_BANDUNG.map((v) => v.districtName));
 
-    expect(plan.all).toHaveLength(districts.size);
+    // `all` now also carries additive VILLAGE_TOKEN units, so district coverage
+    // is asserted explicitly rather than inferred from the array length.
+    expect(plan.districts).toBe(districts.size);
     expect(plan.units.length + plan.review.length).toBe(plan.all.length);
     expect(new Set(plan.all.map((u) => u.massularDistrict))).toEqual(districts);
+
+    const districtUnits = plan.all.filter((u) => u.strategy !== 'VILLAGE_TOKEN' && !u.evidence);
+    expect(districtUnits).toHaveLength(districts.size);
   });
 
   it('every district carries its village count, so an empty plan cannot hide one', () => {
     const plan = buildSearchPlan(KOTA_BANDUNG);
-    const total = plan.all.reduce((s, u) => s + u.villages, 0);
+    const total = plan.all.filter((u) => !u.evidence).reduce((s, u) => s + u.villages, 0);
     expect(total).toBe(KOTA_BANDUNG.length);
   });
 
@@ -282,7 +287,7 @@ describe('determinism and coverage', () => {
   it('unit ids are unique and traversal-safe', () => {
     const ids = buildSearchPlan(KOTA_BANDUNG).all.map((u) => u.unitId);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const id of ids) expect(id).toMatch(/^district-[a-z0-9-]+$/);
+    for (const id of ids) expect(id).toMatch(/^(district|village)-[a-z0-9-]+$/);
   });
 });
 
