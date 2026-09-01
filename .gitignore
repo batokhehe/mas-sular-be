@@ -22,3 +22,7 @@ lerna-debug.log*
 # temp directory
 .temp
 .tmp
+
+# Acquisition cache: raw provider responses, checkpoints and exported scope
+# files. Working data, not source.
+prisma/data/rajaongkir-cache/

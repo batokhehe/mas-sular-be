@@ -132,7 +132,7 @@ describe('OrdersService — master-address names reach the provider', () => {
           province: { select: { name: true } },
           city: { select: { name: true } },
           district: { select: { name: true } },
-          village: { select: { name: true } },
+          village: { select: { name: true, rajaOngkirId: true } },
         }),
       );
     }

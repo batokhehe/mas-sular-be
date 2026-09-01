@@ -26,6 +26,8 @@ export interface AllocationAddress {
   city?: string | null;
   district?: string | null;
   village?: string | null;
+  /** RajaOngkir destination id of the address village (PAXELBOX-49B); absent = unmapped. */
+  villageRajaOngkirId?: number | null;
 }
 
 /** Region names carried with an outlet so a rate request can be built from it. */
@@ -35,6 +37,8 @@ export interface OutletRegionNames {
   city?: string | null;
   district?: string | null;
   village?: string | null;
+  /** RajaOngkir destination id of the outlet village (PAXELBOX-49B); null = unmapped. */
+  villageRajaOngkirId?: number | null;
 }
 
 export interface AllocationResult {
@@ -61,7 +65,7 @@ const OUTLET_REGION_NAMES = {
     province: { select: { name: true } },
     city: { select: { name: true } },
     district: { select: { name: true } },
-    village: { select: { name: true } },
+    village: { select: { name: true, rajaOngkirId: true } },
   },
 } as const;
 
@@ -70,10 +74,22 @@ interface OutletWithRegions {
   province?: { name: string } | null;
   city?: { name: string } | null;
   district?: { name: string } | null;
-  village?: { name: string } | null;
+  village?: { name: string; rajaOngkirId?: number | null } | null;
 }
 
-/** Region names for a rate request. One place, so both allocation paths agree. */
+/**
+ * Region names for a rate request. One place, so both allocation paths agree.
+ *
+ * PAXELBOX-49B also carries the RajaOngkir destination ids from here. They ride
+ * on the `village` relation that is ALREADY loaded for its name, so this costs
+ * no extra query — and putting them beside the names keeps every rate request
+ * assembled in one function rather than three.
+ *
+ * `?? undefined` is deliberate: the ShippingRateRequest field is optional, and
+ * the JNE provider treats ABSENT as "no verified identity for this address" and
+ * returns no quotes. A `null` from an unmapped village must therefore become
+ * `undefined`, never 0 or a fallback.
+ */
 function regionFields(outlet: OutletWithRegions, address: AllocationAddress) {
   return {
     originAddress: outlet.addressDetail ?? undefined,
@@ -81,11 +97,13 @@ function regionFields(outlet: OutletWithRegions, address: AllocationAddress) {
     originCity: outlet.city?.name,
     originDistrict: outlet.district?.name,
     originVillage: outlet.village?.name,
+    originRajaOngkirId: outlet.village?.rajaOngkirId ?? undefined,
     destinationAddress: address.address ?? undefined,
     destinationProvince: address.province ?? undefined,
     destinationCity: address.city ?? undefined,
     destinationDistrict: address.district ?? undefined,
     destinationVillage: address.village ?? undefined,
+    destinationRajaOngkirId: address.villageRajaOngkirId ?? undefined,
   };
 }
 
@@ -102,6 +120,7 @@ function outletProjection(outlet: OutletWithRegions & { id: string; name: string
     city: outlet.city?.name ?? null,
     district: outlet.district?.name ?? null,
     village: outlet.village?.name ?? null,
+    villageRajaOngkirId: outlet.village?.rajaOngkirId ?? null,
   };
 }
 

@@ -53,11 +53,29 @@ export interface JneProviderConfig {
   maxRetry: number;
 }
 
+/**
+ * RajaOngkir is the RATE SOURCE for JNE (PAXELBOX-45) — not a courier of its
+ * own. It never appears as a provider name, never books a shipment and never
+ * tracks one; JNE remains the business identity end to end.
+ *
+ * Kept separate from JneProviderConfig because the two are independent: JNE's
+ * own credentials still serve tracking, while these serve quotation only.
+ */
+export interface RajaOngkirConfig {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey?: string;
+  timeoutMs: number;
+  maxRetry: number;
+}
+
 export interface ShippingConfig {
   /** Store origin postal code, used when the request origin is a placeholder. */
   originPostalCode: string;
   paxel: PaxelProviderConfig;
   jne: JneProviderConfig;
+  /** RajaOngkir — the RATE source behind the `jne` quotation provider. */
+  rajaongkir: RajaOngkirConfig;
   /**
    * When a provider is disabled (no credentials), fall back to a clearly-labeled
    * mock quote instead of contributing none, so checkout stays testable locally.
@@ -119,6 +137,19 @@ export function loadShippingConfig(env: NodeJS.ProcessEnv = process.env): Shippi
       originCode: env.JNE_ORIGIN_CODE,
       timeoutMs: positiveInt(env.JNE_TIMEOUT_MS, 8_000),
       maxRetry: positiveInt(env.JNE_MAX_RETRY, 2),
+    },
+    rajaongkir: {
+      // Enabled only with an explicit key: without one the provider must not
+      // pretend it can price anything.
+      enabled: bool(env.RAJAONGKIR_ENABLED) && Boolean(env.RAJAONGKIR_API_KEY),
+      baseUrl: (env.RAJAONGKIR_BASE_URL ?? 'https://rajaongkir.komerce.id/api/v1').replace(/\/+$/, ''),
+      apiKey: env.RAJAONGKIR_API_KEY,
+      timeoutMs: positiveInt(env.RAJAONGKIR_TIMEOUT_MS, 8_000),
+      // 1 = no in-call retry beyond the first attempt. RajaOngkir's 429 means a
+      // DAILY quota is spent (PAXELBOX-41C); the shared client already refuses
+      // to retry 429 (PAXELBOX-45A), and burning retries on 5xx spends the same
+      // quota, so this stays deliberately low.
+      maxRetry: positiveInt(env.RAJAONGKIR_MAX_RETRY, 1),
     },
   };
 }

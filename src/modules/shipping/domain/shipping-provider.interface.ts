@@ -49,6 +49,22 @@ export interface ShippingRateRequest {
    * `PaxelBoxSize | null` - never undefined - so the two can never be confused.
    */
   paxelBoxSize?: PaxelBoxSize | null;
+  /**
+   * RajaOngkir's OWN numeric district ids for this request (PAXELBOX-45).
+   *
+   * RajaOngkir prices by its own SUBDISTRICT id — never by postal code, and never
+   * by a Kemendagri code. Nothing populates these yet: `Village.rajaOngkirId`
+   * exists in the schema but its migration is unapplied and the mapping is
+   * still unresolved (PAXELBOX-41A/41B). They are declared here so the boundary
+   * is explicit and the JNE provider has a defined input to check, rather than
+   * deriving an id from data that cannot produce one.
+   *
+   * ABSENT is the normal state today and means "no verified RajaOngkir identity
+   * for this address" — the provider then returns no quotes. It must never be
+   * substituted with a postal code or a guess.
+   */
+  originRajaOngkirId?: number;
+  destinationRajaOngkirId?: number;
 }
 
 /** Legacy single-rate shape (kept for the /shipping/rates endpoint and the

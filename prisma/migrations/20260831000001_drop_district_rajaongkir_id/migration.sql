@@ -1,0 +1,21 @@
+-- PAXELBOX-49E: retire the district-level RajaOngkir column, append-only.
+--
+-- 20260827000000 added `District.rajaOngkirId` and was pushed to origin/main and
+-- origin/canonicalize. Deleting that migration would break `prisma migrate deploy`
+-- on any database that had already applied it — the recorded migration would have
+-- no folder — so it is KEPT and this migration compensates for it instead.
+--
+-- Ordering is what makes this safe:
+--   20260827000000  add District.rajaOngkirId
+--   20260831000000  add Village.rajaOngkirId
+--   20260831000001  drop District.rajaOngkirId   <- here
+-- A fresh database creates the column and drops it again; a database that already
+-- applied 20260827000000 simply drops it. Both converge on the same final shape,
+-- and no environment needs to be inspected first.
+--
+-- Dropping loses no data: the column is nullable, has no default, was never
+-- backfilled, and no application code ever wrote to it (0 references in src/).
+-- RajaOngkir prices by SUBDISTRICT, so the mapping lives on Village instead —
+-- a district averages 11.5 villages (max 108), which is why the district-level
+-- column was wrong granularity and is being removed rather than populated.
+ALTER TABLE `District` DROP COLUMN `rajaOngkirId`;

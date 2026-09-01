@@ -170,6 +170,9 @@ describe('D: the Paxel create request carries the Jakarta wall-clock time', () =
     return {
       originPostalCode: '40111',
       allowMockRates: false,
+      // RajaOngkir is the JNE rate source (PAXELBOX-45); disabled here so these
+      // pre-existing cases keep exercising exactly what they always did.
+      rajaongkir: { enabled: false, baseUrl: 'https://rajaongkir.invalid/api/v1', timeoutMs: 1000, maxRetry: 1 },
       paxel: {
         enabled: true,
         baseUrl: 'https://stage-commerce-api.paxel.test/v1',

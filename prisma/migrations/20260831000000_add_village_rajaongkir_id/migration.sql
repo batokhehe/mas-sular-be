@@ -1,0 +1,17 @@
+-- PAXELBOX-49B: RajaOngkir destination mapping at VILLAGE (subdistrict) level.
+--
+-- RajaOngkir's destination row IS a subdistrict/kelurahan, so this is the
+-- granularity its ids actually address. The earlier District-level column was
+-- retired unapplied: a district holds 11.5 villages on average (max 108), so a
+-- district id would have priced every address in a kecamatan as one arbitrary
+-- kelurahan.
+--
+-- Additive and reversible: one NULLABLE column, no default, no backfill, no
+-- constraint. Every existing row keeps NULL, which the rate path reads as
+-- "no JNE quote for this address" — never as a reason to guess.
+--
+-- Deliberately NOT unique: a one-to-one correspondence between Kemendagri
+-- villages and RajaOngkir destinations is not proven. The offline import tool
+-- refuses to emit duplicate ids, so the guarantee is enforced where there is
+-- evidence for it rather than asserted here.
+ALTER TABLE `Village` ADD COLUMN `rajaOngkirId` INT NULL;

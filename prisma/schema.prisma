@@ -242,17 +242,6 @@ model District {
   cityId            String
   code              String             @unique
   name              String
-  /// RajaOngkir's own district id, for JNE rate lookups only (PAXELBOX-41).
-  /// Int because the API returns it as a JSON number (`"id": 1360`), not a string.
-  ///
-  /// NULLABLE and deliberately NOT unique. Null means "no verified RajaOngkir
-  /// mapping for this district", which the rate path must read as "no JNE quote
-  /// here" — never as a reason to guess, and never as an error that breaks
-  /// checkout. Uniqueness is not declared because a one-to-one correspondence
-  /// between Kemendagri districts and RajaOngkir districts is NOT proven; the
-  /// import tool still refuses to emit duplicates, so the guarantee is enforced
-  /// where there is evidence for it rather than asserted in the schema.
-  rajaOngkirId      Int?
   isActive          Boolean            @default(true)
   city              City               @relation(fields: [cityId], references: [id], onDelete: Cascade)
   villages          Village[]
@@ -272,6 +261,25 @@ model Village {
   code              String             @unique
   name              String
   postalCode        String?            @db.VarChar(5)
+  /// RajaOngkir's own destination id, for JNE rate lookups only (PAXELBOX-49B).
+  ///
+  /// Village-level because that is RajaOngkir's OWN granularity: a destination
+  /// row is one subdistrict/kelurahan, e.g.
+  ///   { id: 4932, subdistrict_name: "CIPAMOKOLAN", district_name: "RANCASARI",
+  ///     city_name: "BANDUNG", province_name: "JAWA BARAT", zip_code: "40292" }
+  /// A district averages 11.5 villages (max 108), so a district-level id would
+  /// have priced every address in a kecamatan as one arbitrary kelurahan. The
+  /// earlier District.rajaOngkirId was retired for exactly that reason.
+  ///
+  /// Int because the API returns it as a JSON number. NULLABLE and deliberately
+  /// NOT unique: a one-to-one correspondence with Kemendagri villages is not
+  /// proven, so the import tool enforces it (it refuses to emit duplicates)
+  /// rather than the schema asserting a contract we have not verified.
+  ///
+  /// Null means "no verified RajaOngkir identity for this village" and the rate
+  /// path must read it as "no JNE quote here" — never as a reason to guess, fall
+  /// back to a district, use a postal code, or search RajaOngkir at checkout.
+  rajaOngkirId      Int?
   isActive          Boolean            @default(true)
   district          District           @relation(fields: [districtId], references: [id], onDelete: Cascade)
   addresses         Address[]

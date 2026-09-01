@@ -29,6 +29,9 @@ function config(over: Partial<{ enabled: boolean; needInsurance: boolean; maxRet
   return {
     originPostalCode: '40111',
     allowMockRates: false,
+    // RajaOngkir is the JNE rate source (PAXELBOX-45); disabled here so these
+    // pre-existing cases keep exercising exactly what they always did.
+    rajaongkir: { enabled: false, baseUrl: 'https://rajaongkir.invalid/api/v1', timeoutMs: 1000, maxRetry: 1 },
     paxel: {
       enabled: over.enabled ?? true,
       baseUrl: 'https://stage-commerce-api.paxel.test/v1',

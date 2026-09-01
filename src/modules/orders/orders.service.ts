@@ -71,7 +71,7 @@ const ADDRESS_REGION_NAMES = {
     province: { select: { name: true } },
     city: { select: { name: true } },
     district: { select: { name: true } },
-    village: { select: { name: true } },
+    village: { select: { name: true, rajaOngkirId: true } },
   },
 } as const;
 
@@ -181,7 +181,7 @@ export class OrdersService {
       province?: { name: string } | null;
       city?: { name: string } | null;
       district?: { name: string } | null;
-      village?: { name: string } | null;
+      village?: { name: string; rajaOngkirId?: number | null } | null;
     },
     weightGram: number,
     totalQuantity: number,
@@ -229,6 +229,10 @@ export class OrdersService {
       destinationCity: address.city?.name,
       destinationDistrict: address.district?.name,
       destinationVillage: address.village?.name,
+      // PAXELBOX-49B: same village-level RajaOngkir ids as the allocated path, so
+      // the legacy fallback prices JNE identically rather than silently losing it.
+      originRajaOngkirId: outlet?.village?.rajaOngkirId ?? undefined,
+      destinationRajaOngkirId: address.village?.rajaOngkirId ?? undefined,
     };
   }
 
@@ -251,7 +255,7 @@ export class OrdersService {
       province?: { name: string } | null;
       city?: { name: string } | null;
       district?: { name: string } | null;
-      village?: { name: string } | null;
+      village?: { name: string; rajaOngkirId?: number | null } | null;
     },
     items: NormalizedCheckoutItem[],
     weightGram: number,
@@ -288,6 +292,12 @@ export class OrdersService {
         destinationCity: address.city?.name,
         destinationDistrict: address.district?.name,
         destinationVillage: address.village?.name,
+        // PAXELBOX-49B: RajaOngkir prices by ITS OWN subdistrict id. Both ride on
+        // the village relations already loaded above, so this costs no query.
+        // Absent (unmapped village) => the JNE provider returns no quotes; it
+        // never falls back to a district, a postal code or a live search.
+        originRajaOngkirId: outlet?.villageRajaOngkirId ?? undefined,
+        destinationRajaOngkirId: address.village?.rajaOngkirId ?? undefined,
       };
       return { outletId: result.outletId, request, quotes: result.quotes };
     }
@@ -309,7 +319,7 @@ export class OrdersService {
     province?: { name: string } | null;
     city?: { name: string } | null;
     district?: { name: string } | null;
-    village?: { name: string } | null;
+    village?: { name: string; rajaOngkirId?: number | null } | null;
   }) {
     return {
       ...address,
@@ -318,6 +328,7 @@ export class OrdersService {
       city: address.city?.name ?? null,
       district: address.district?.name ?? null,
       village: address.village?.name ?? null,
+      villageRajaOngkirId: address.village?.rajaOngkirId ?? null,
     };
   }
 
