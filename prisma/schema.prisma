@@ -238,18 +238,19 @@ model City {
 }
 
 model District {
-  id                String             @id @default(uuid())
+  id                String               @id @default(uuid())
   cityId            String
-  code              String             @unique
+  code              String               @unique
   name              String
-  isActive          Boolean            @default(true)
-  city              City               @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  isActive          Boolean              @default(true)
+  city              City                 @relation(fields: [cityId], references: [id], onDelete: Cascade)
   villages          Village[]
   addresses         Address[]
   deliveryCoverages DeliveryCoverage[]
   outlets           Outlet[]
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  jneMappings       JneDistrictMapping[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
   @@index([cityId])
   @@index([name])
@@ -595,32 +596,32 @@ model OrderNote {
 }
 
 model Payment {
-  id                String               @id @default(uuid())
-  orderId           String               @unique
-  method            PaymentMethod
-  status            PaymentStatus        @default(PENDING)
-  amount            Int
+  id                  String                      @id @default(uuid())
+  orderId             String                      @unique
+  method              PaymentMethod
+  status              PaymentStatus               @default(PENDING)
+  amount              Int
   // Manual BANK_TRANSFER unique 3-digit code folded into `amount` so the transfer
   // total is easy to reconcile. Null for QRIS/COD/GATEWAY and legacy payments.
-  uniqueCode        Int?
-  provider          String?
-  providerReference String?
-  manualBankName    String?
-  manualAccountName String?
-  manualReceiptUrl  String?
-  verifiedByUserId  String?
-  verifiedAt        DateTime?
-  firstReminderAt   DateTime?
-  secondReminderAt  DateTime?
-  webhookPayload    Json?
-  order             Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  transactions      Transaction[]
+  uniqueCode          Int?
+  provider            String?
+  providerReference   String?
+  manualBankName      String?
+  manualAccountName   String?
+  manualReceiptUrl    String?
+  verifiedByUserId    String?
+  verifiedAt          DateTime?
+  firstReminderAt     DateTime?
+  secondReminderAt    DateTime?
+  webhookPayload      Json?
+  order               Order                       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  transactions        Transaction[]
   // Gateway attempt ledger (Phase 2). Back-relation only — Payment gains NO column.
   gatewayTransactions PaymentGatewayTransaction[]
-  uploadTokens      PaymentUploadToken[]
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  deletedAt         DateTime?
+  uploadTokens        PaymentUploadToken[]
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  deletedAt           DateTime?
 
   @@index([status, method])
   @@index([status, method, createdAt])
@@ -754,21 +755,21 @@ model PaymentGatewayTransaction {
 /// `fingerprint` is UNIQUE: that constraint — not application logic — is what makes
 /// duplicate and concurrent deliveries collapse to exactly one effective processing.
 model PaymentWebhookEvent {
-  id                    String   @id @default(uuid())
-  provider              String   @db.VarChar(32)
+  id                    String                 @id @default(uuid())
+  provider              String                 @db.VarChar(32)
   /// SHA-256 of the canonical notification identity. THE deduplication invariant.
-  fingerprint           String   @unique @db.VarChar(64)
+  fingerprint           String                 @unique @db.VarChar(64)
   /// The id WE sent the provider — the correlation key, never the bare order number.
-  providerOrderId       String   @db.VarChar(128)
-  providerTransactionId String?  @db.VarChar(128)
-  transactionStatus     String?  @db.VarChar(32)
-  statusCode            String?  @db.VarChar(8)
-  fraudStatus           String?  @db.VarChar(32)
+  providerOrderId       String                 @db.VarChar(128)
+  providerTransactionId String?                @db.VarChar(128)
+  transactionStatus     String?                @db.VarChar(32)
+  statusCode            String?                @db.VarChar(8)
+  fraudStatus           String?                @db.VarChar(32)
   /// Verbatim amount string as signed by the provider — never normalized to a number.
-  grossAmount           String   @db.VarChar(32)
+  grossAmount           String                 @db.VarChar(32)
   /// Correlated attempt. A plain column, not a relation: this table must survive
   /// independently of the ledger row so the dedup key is never cascade-deleted.
-  gatewayTransactionId  String?  @db.VarChar(36)
+  gatewayTransactionId  String?                @db.VarChar(36)
   /// ALLOWLISTED notification snapshot. `signature_key`, credentials and any
   /// unrecognised field are excluded at build time — never written, never logged.
   payload               Json?
@@ -778,7 +779,7 @@ model PaymentWebhookEvent {
   /// separately on purpose: a notification whose authoritative status check failed
   /// must stay re-processable, so its dedup row exists but is not yet terminal.
   settlementState       WebhookSettlementState @default(RECEIVED)
-  processedAt           DateTime @default(now())
+  processedAt           DateTime               @default(now())
 
   @@index([provider, providerOrderId, processedAt])
   @@index([processedAt])
@@ -1069,22 +1070,22 @@ enum LogLevel {
 /// One row per request/exception/worker event; correlated by `requestId`. Pruned
 /// by the retention worker (LOG_RETENTION_DAYS). Newest-first reads are index-backed.
 model SystemLog {
-  id                     String    @id @default(uuid())
-  createdAt              DateTime  @default(now())
-  level                  LogLevel  @default(INFO)
-  module                 String    @db.VarChar(64)
-  action                 String    @db.VarChar(96)
-  message                String    @db.Text
-  requestId              String?   @db.VarChar(64)
-  userId                 String?   @db.VarChar(36)
-  adminId                String?   @db.VarChar(36)
-  orderId                String?   @db.VarChar(36)
-  paymentId              String?   @db.VarChar(36)
-  shipmentId             String?   @db.VarChar(36)
-  inventoryReservationId String?   @db.VarChar(36)
-  ip                     String?   @db.VarChar(64)
-  method                 String?   @db.VarChar(8)
-  path                   String?   @db.VarChar(512)
+  id                     String   @id @default(uuid())
+  createdAt              DateTime @default(now())
+  level                  LogLevel @default(INFO)
+  module                 String   @db.VarChar(64)
+  action                 String   @db.VarChar(96)
+  message                String   @db.Text
+  requestId              String?  @db.VarChar(64)
+  userId                 String?  @db.VarChar(36)
+  adminId                String?  @db.VarChar(36)
+  orderId                String?  @db.VarChar(36)
+  paymentId              String?  @db.VarChar(36)
+  shipmentId             String?  @db.VarChar(36)
+  inventoryReservationId String?  @db.VarChar(36)
+  ip                     String?  @db.VarChar(64)
+  method                 String?  @db.VarChar(8)
+  path                   String?  @db.VarChar(512)
   statusCode             Int?
   durationMs             Int?
   metadata               Json?
@@ -1259,4 +1260,136 @@ model NotificationOutbox {
   @@index([status, createdAt])
   // Customer Communication Center: conversation lookups by recipient.
   @@index([recipient, createdAt])
+}
+
+/// PAXELBOX-61E: JNE's OWN destination/origin master data.
+///
+/// Deliberately a separate table rather than a column on Province/City/District/
+/// Village. JNE's granularity is its own: the observed sandbox dataset is
+/// predominantly DISTRICT-level (7,763 two-part names like "CIBIRU,BANDUNG"),
+/// with a CITY tier (539 one-part names like "BANDUNG") and a small
+/// international tail. It matches no single Kemendagri level, so binding it to
+/// one would be wrong for the others — the mistake District.rajaOngkirId already
+/// made once.
+///
+/// `code` is JNE's own opaque identifier and is NEVER a Kemendagri code or a
+/// RajaOngkir id. Its 3-letter prefix is an IATA routing hub (BDO, CGK, SUB),
+/// not an administrative unit, and 498 names appear under more than one hub —
+/// so a prefix must never be used to infer a mapping.
+model JneLocation {
+  id String @id @default(uuid())
+
+  /// JNE's own code. Unique across the observed dataset (8,322/8,322).
+  code String @unique
+
+  /// EXACTLY as the API returned it. Authoritative; never rewritten, never
+  /// trimmed. 1,370 rows carry comma-spacing anomalies and 566 carry edge
+  /// whitespace — normalising on write would destroy the evidence a reviewer
+  /// needs later.
+  rawName String @db.VarChar(255)
+
+  /// Derived: uppercase, collapsed whitespace, normalised comma spacing.
+  /// Persisted so lookups are deterministic across call sites, never instead
+  /// of rawName.
+  normalizedName String @db.VarChar(255)
+
+  /// Derived from normalizedName. For "CIBIRU,BANDUNG": child=CIBIRU,
+  /// parent=BANDUNG. Null parent for the 539 one-part city-tier rows.
+  parsedChild  String  @db.VarChar(255)
+  parsedParent String? @db.VarChar(255)
+
+  /// Comma-separated part count. Separates the city tier (1) from the district
+  /// tier (2) from the international tail (3) without re-parsing.
+  partCount Int
+
+  kind   JneLocationKind
+  source JneDataSource
+
+  /// When the snapshot this row came from was fetched. The sandbox dataset
+  /// contains test rows, so provenance is required to judge what a row means.
+  sourceFetchedAt DateTime
+
+  /// Soft-retire on refresh instead of deleting: a mapping must never dangle.
+  /// Also carries the sandbox test rows (TEST, XXWWQEQ) as inactive.
+  isActive Boolean @default(true)
+
+  districtMappings JneDistrictMapping[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind, parsedParent, parsedChild])
+  @@index([normalizedName])
+  @@index([isActive])
+}
+
+/// PAXELBOX-61E: a REVIEWED mapping from an internal District to a JNE location.
+///
+/// District-level because that is JNE's pricing granularity for Kota Bandung —
+/// one JNE code legitimately covers roughly five of our villages. Mapping at
+/// Village level would duplicate one code across every village in a district.
+///
+/// Not unique on districtId alone, deliberately: 512 JNE names carry more than
+/// one code and 498 of those span different routing hubs, so one district may
+/// later need a per-origin code. Whether the origin hub actually selects the
+/// code is UNPROVEN and needs tariff evidence, so no origin discriminator is
+/// added yet — the composite key simply leaves room for one.
+model JneDistrictMapping {
+  id String @id @default(uuid())
+
+  districtId    String
+  jneLocationId String
+
+  status     JneMappingStatus @default(REVIEW_REQUIRED)
+  method     JneMappingMethod
+  /// Free-form confidence recorded by the reviewer, e.g. HIGH / MEDIUM / LOW.
+  confidence String?          @db.VarChar(32)
+
+  /// Why this mapping was approved, in enough detail to re-check it later:
+  /// the matched raw JNE name, its parsed parent, how many candidates existed
+  /// at decision time, and their codes. The RajaOngkir alias table proved that
+  /// recording the evidence is what makes a decision reviewable.
+  evidence Json?
+  notes    String? @db.Text
+
+  reviewedBy String?
+  reviewedAt DateTime?
+
+  isActive Boolean @default(true)
+
+  district    District    @relation(fields: [districtId], references: [id], onDelete: Cascade)
+  jneLocation JneLocation @relation(fields: [jneLocationId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([districtId, jneLocationId])
+  @@index([status])
+  @@index([districtId])
+  @@index([isActive])
+}
+
+enum JneLocationKind {
+  ORIGIN
+  DESTINATION
+}
+
+enum JneDataSource {
+  SANDBOX
+  PRODUCTION
+}
+
+/// No DISABLED member: `isActive` already expresses activation, and a second
+/// off-switch would let the two disagree.
+enum JneMappingStatus {
+  MATCHED
+  REVIEW_REQUIRED
+  AMBIGUOUS
+  NOT_FOUND
+}
+
+enum JneMappingMethod {
+  EXACT_NAME
+  REVIEWED_ALIAS
+  MANUAL
 }
