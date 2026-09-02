@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { SHIPPING_CONFIG, loadShippingConfig } from '../shipping/shipping.config';
+import { SHIPPING_CONFIG, assertJneEnvironment, loadShippingConfig } from '../shipping/shipping.config';
 import { JneShipmentProvider } from './infrastructure/providers/jne-shipment.provider';
 import { PaxelShipmentProvider } from './infrastructure/providers/paxel-shipment.provider';
 import { ShipmentAdminController } from './presentation/shipment-admin.controller';
@@ -17,7 +17,20 @@ import { ShipmentSyncService } from './shipment-sync.service';
   controllers: [ShipmentAdminController],
   providers: [
     // Provider credentials (same env as quotation; env.validation asserts at boot).
-    { provide: SHIPPING_CONFIG, useFactory: () => loadShippingConfig() },
+    //
+    // This module builds SHIPPING_CONFIG itself rather than importing ShippingModule,
+    // so assertShippingConfigured() never ran here - and THIS is the module that owns
+    // JNE tracking and cancel, the two paths that actually spend jne.baseUrl. The
+    // environment guard is applied explicitly so that bypass cannot exist
+    // (PAXELBOX-61K). Paxel's credential checks stay with ShippingModule.
+    {
+      provide: SHIPPING_CONFIG,
+      useFactory: () => {
+        const config = loadShippingConfig();
+        assertJneEnvironment(config.jne);
+        return config;
+      },
+    },
     PaxelShipmentProvider,
     JneShipmentProvider,
     // === Fulfillment courier registry ===

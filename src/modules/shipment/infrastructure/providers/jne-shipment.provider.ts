@@ -6,7 +6,7 @@ import {
   executeShippingRequest,
   ShippingHttpClient,
 } from '../../../shipping/infrastructure/http/shipping-http-client';
-import { SHIPPING_CONFIG, ShippingConfig } from '../../../shipping/shipping.config';
+import { SHIPPING_CONFIG, ShippingConfig, assertJneEnvironment } from '../../../shipping/shipping.config';
 import {
   CreateShipmentInput,
   CreateShipmentResult,
@@ -78,6 +78,16 @@ export class JneShipmentProvider implements ShipmentProvider {
   private assertEnabled(): void {
     if (!this.cfg.enabled) {
       throw new PermanentError('JNE fulfillment is disabled (JNE_ENABLED=false)', this.name);
+    }
+    // Re-checked per call, not only at boot (PAXELBOX-61K). Tracking and cancel are
+    // the paths that spend this base URL against real, hand-entered cnotes, and a
+    // SHIPPING_CONFIG wired directly - as several tests and any future module may do -
+    // never passes through a module factory. PermanentError so the tracking worker
+    // records a misconfiguration instead of retrying it forever.
+    try {
+      assertJneEnvironment(this.cfg);
+    } catch (err) {
+      throw new PermanentError(err instanceof Error ? err.message : String(err), this.name);
     }
   }
 

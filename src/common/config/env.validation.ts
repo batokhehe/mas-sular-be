@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isJneSandboxUrl } from '../../modules/shipping/shipping.config';
 
 /** Known hardcoded development secrets that must never be used as real secrets. */
 const INSECURE_SECRETS = new Set(['development-only-secret', 'development-only-admin-secret']);
@@ -105,6 +106,9 @@ const baseSchema = z
     // Paxel prices from it, so a bad value silently changes what customers pay.
     PAXEL_DEFAULT_DIMENSION: z.string().regex(/^\d{1,2}x\d{1,2}x\d{1,2}$/, 'PAXEL_DEFAULT_DIMENSION must be LxWxH in cm, e.g. 30x35x20').optional(),
     JNE_ENABLED: boolFlag,
+    // Which JNE tenant the courier addresses. Absent means sandbox; an
+    // unrecognised value is rejected here rather than silently downgraded.
+    JNE_ENVIRONMENT: z.enum(['sandbox', 'production']).optional(),
     JNE_BASE_URL: z.string().optional(),
     JNE_API_KEY: z.string().optional(),
     JNE_USERNAME: z.string().optional(),
@@ -194,6 +198,24 @@ export const envSchema = baseSchema.superRefine((env, ctx) => {
     for (const key of ['JNE_API_KEY', 'JNE_USERNAME', 'JNE_ORIGIN_CODE'] as const) {
       if (!env[key]) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required when JNE_ENABLED=true` });
+      }
+    }
+    // PAXELBOX-61K. JNE tracking and cancel spend JNE_BASE_URL on real cnotes, so a
+    // production courier may neither borrow the sandbox nor inherit a default: JNE
+    // has supplied no production endpoint, so production must name its own.
+    if (env.JNE_ENVIRONMENT === 'production') {
+      if (!env.JNE_BASE_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JNE_BASE_URL'],
+          message: 'JNE production configuration is incomplete: JNE_BASE_URL is required when JNE_ENVIRONMENT=production',
+        });
+      } else if (isJneSandboxUrl(env.JNE_BASE_URL)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JNE_BASE_URL'],
+          message: 'JNE is enabled in production but JNE_BASE_URL points to the known sandbox endpoint',
+        });
       }
     }
   }

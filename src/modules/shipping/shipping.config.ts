@@ -1,6 +1,21 @@
 import { nonNegativeInt as positiveInt } from '../../common/utils/number.util';
 export const SHIPPING_CONFIG = 'SHIPPING_CONFIG';
 
+/**
+ * The JNE integration specification supplied with this project (PAXELBOX-61A/61B)
+ * names this host:port as the SANDBOX for every JNE API - getorigin,
+ * getdestination, pricedev, pickupcashless and tracing. It is recorded here as a
+ * REJECT list for production, never as something to fall back to.
+ *
+ * There is deliberately NO production constant beside it. PAXELBOX-61J established
+ * that JNE has supplied no production endpoint, and inventing one is precisely the
+ * mistake this guard exists to prevent.
+ */
+export const JNE_SANDBOX_HOSTS = ['apiv2.jne.co.id:10202'];
+
+/** Which JNE tenant a configuration addresses. Any other value is an error. */
+export type JneEnvironment = 'sandbox' | 'production';
+
 export interface PaxelProviderConfig {
   enabled: boolean;
   baseUrl: string;
@@ -44,6 +59,15 @@ export interface PaxelProviderConfig {
 
 export interface JneProviderConfig {
   enabled: boolean;
+  /**
+   * Which JNE tenant `baseUrl` and the credentials address (PAXELBOX-61K).
+   *
+   * ABSENT MEANS SANDBOX. A courier must never be promoted to live traffic by an
+   * unset variable, so there is no path by which omitting this yields production.
+   * `loadShippingConfig` always sets it explicitly; the field stays optional so a
+   * hand-built config (every existing test) keeps its safe meaning.
+   */
+  environment?: JneEnvironment;
   baseUrl: string;
   apiKey?: string;
   username?: string;
@@ -114,6 +138,11 @@ export function isPaxelDimension(value: string | undefined): boolean {
 }
 
 export function loadShippingConfig(env: NodeJS.ProcessEnv = process.env): ShippingConfig {
+  // Cast, not parse: an unrecognised value must survive to assertJneEnvironment()
+  // and be REJECTED there. Coercing it to a default here would silently downgrade
+  // a misspelt "production" into sandbox, which is the failure mode this guard is
+  // for. env.validation rejects it at boot; this is the second line.
+  const jneEnvironment = env.JNE_ENVIRONMENT as JneEnvironment | undefined;
   return {
     originPostalCode: env.SHIPPING_ORIGIN_POSTAL_CODE ?? '40111',
     allowMockRates: env.NODE_ENV !== 'production',
@@ -131,7 +160,15 @@ export function loadShippingConfig(env: NodeJS.ProcessEnv = process.env): Shippi
     },
     jne: {
       enabled: bool(env.JNE_ENABLED),
-      baseUrl: (env.JNE_BASE_URL ?? 'https://apiv2.jne.co.id:10102').replace(/\/+$/, ''),
+      // Absent means sandbox - never production.
+      environment: jneEnvironment ?? 'sandbox',
+      // Production has NO default endpoint, on purpose: JNE has supplied none
+      // (PAXELBOX-61J), so an unset JNE_BASE_URL must fail the guard rather than
+      // resolve to a URL of unknown provenance. The sandbox default is unchanged.
+      baseUrl: (jneEnvironment === 'production'
+        ? (env.JNE_BASE_URL ?? '')
+        : (env.JNE_BASE_URL ?? 'https://apiv2.jne.co.id:10102')
+      ).replace(/\/+$/, ''),
       apiKey: env.JNE_API_KEY,
       username: env.JNE_USERNAME,
       originCode: env.JNE_ORIGIN_CODE,
@@ -152,6 +189,61 @@ export function loadShippingConfig(env: NodeJS.ProcessEnv = process.env): Shippi
       maxRetry: positiveInt(env.RAJAONGKIR_MAX_RETRY, 1),
     },
   };
+}
+
+/** Host of a URL, or the raw value when it is not parseable (validation elsewhere). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** True when `url` addresses the JNE endpoint the supplied specification calls sandbox. */
+export function isJneSandboxUrl(url: string): boolean {
+  return JNE_SANDBOX_HOSTS.includes(hostOf(url).toLowerCase());
+}
+
+/**
+ * JNE environment guard (PAXELBOX-61K).
+ *
+ * `trackShipmentRaw` and `cancelShipment` both spend `jne.baseUrl`, and JNE
+ * consignments are booked by hand - so an enabled courier pointed at the sandbox
+ * answers questions about REAL cnotes with sandbox data and writes the answer to
+ * a customer's shipment status. Midtrans has had a guard against this class of
+ * mistake since Phase 5H.2; the courier never got one.
+ *
+ * It is NOT a copy of that guard. Midtrans knows both of its hosts, so it polices
+ * the mismatch in both directions. Only the SANDBOX host is known here
+ * (PAXELBOX-61J: JNE has supplied no production endpoint), so the rule is
+ * one-directional of necessity - production may not use the sandbox, and
+ * production must name an endpoint of its own. The inverse, a sandbox environment
+ * quietly pointed at production, is undetectable until JNE names that host, and is
+ * left as a stated gap rather than guessed at with a hostname heuristic.
+ *
+ * Nothing here infers the environment: not from the URL, not from NODE_ENV.
+ */
+export function assertJneEnvironment(config: JneProviderConfig): void {
+  // A disabled courier issues no requests, so it needs no endpoint and no tenant.
+  if (!config.enabled) return;
+
+  const environment = config.environment ?? 'sandbox';
+  if (environment !== 'sandbox' && environment !== 'production') {
+    throw new Error(`JNE_ENVIRONMENT must be "sandbox" or "production" (got "${environment}")`);
+  }
+  if (environment === 'sandbox') return;
+
+  if (!config.baseUrl) {
+    throw new Error(
+      'JNE production configuration is incomplete: JNE_BASE_URL must name the official JNE ' +
+        'production endpoint when JNE_ENVIRONMENT=production. There is no default, because JNE ' +
+        'has not supplied a production endpoint.',
+    );
+  }
+  if (isJneSandboxUrl(config.baseUrl)) {
+    throw new Error('JNE is enabled in production but JNE_BASE_URL points to the known sandbox endpoint.');
+  }
 }
 
 /**
@@ -177,6 +269,9 @@ export function assertShippingConfigured(config: ShippingConfig): void {
     if (!config.jne.username) missing.push('JNE_USERNAME');
     if (!config.jne.originCode) missing.push('JNE_ORIGIN_CODE');
   }
+  // Environment safety is a separate failure from a missing credential, and says
+  // so in its own words rather than joining the "missing credentials" list.
+  assertJneEnvironment(config.jne);
   if (missing.length) {
     throw new Error(`Shipping providers are enabled but missing credentials: ${missing.join(', ')}`);
   }
