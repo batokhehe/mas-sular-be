@@ -1279,8 +1279,10 @@ model NotificationOutbox {
 model JneLocation {
   id String @id @default(uuid())
 
-  /// JNE's own code. Unique across the observed dataset (8,322/8,322).
-  code String @unique
+  /// JNE's own code. Unique WITHIN a namespace, not globally - see @@unique
+  /// below. Unique across the observed destination dataset (8,322/8,322) and
+  /// across the observed origin dataset (614/614).
+  code String
 
   /// EXACTLY as the API returned it. Authoritative; never rewritten, never
   /// trimmed. 1,370 rows carry comma-spacing anomalies and 566 carry edge
@@ -1318,6 +1320,14 @@ model JneLocation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Scoped by KIND, not global (PAXELBOX-61P). JNE serves two masters and they
+  /// overlap heavily: 601 of the 614 origin codes also appear as destinations,
+  /// and 62 of those carry a DIFFERENT name in each - CBN20300 is "MAJALENGKA"
+  /// as an origin and "MAJALENGKA, KAB MAJALENGKA" as a destination. A global
+  /// unique on `code` would make importing the origin master upsert-overwrite
+  /// 601 destination rows, flipping their kind and rewriting 62 names beneath
+  /// the approved district mappings that point at them.
+  @@unique([code, kind])
   @@index([kind, parsedParent, parsedChild])
   @@index([normalizedName])
   @@index([isActive])

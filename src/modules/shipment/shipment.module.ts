@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SHIPPING_CONFIG, assertJneEnvironment, loadShippingConfig } from '../shipping/shipping.config';
 import { JneShipmentProvider } from './infrastructure/providers/jne-shipment.provider';
+import { JneOriginBootValidator } from './jne-origin-boot.validator';
 import { PaxelShipmentProvider } from './infrastructure/providers/paxel-shipment.provider';
 import { ShipmentAdminController } from './presentation/shipment-admin.controller';
 import { SHIPMENT_PROVIDERS, ShipmentProviderFactory } from './shipment-provider.factory';
@@ -33,6 +34,9 @@ import { ShipmentSyncService } from './shipment-sync.service';
     },
     PaxelShipmentProvider,
     JneShipmentProvider,
+    // Checks JNE_ORIGIN_CODE against JNE's own ORIGIN master at bootstrap -
+    // the check that would have caught BDO10056 (PAXELBOX-61P).
+    JneOriginBootValidator,
     // === Fulfillment courier registry ===
     // Add a courier by implementing ShipmentProvider and appending it here.
     {

@@ -29,6 +29,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import {
   assertExpectedRowCount,
   computeImportDiff,
+  expectedRowsFor,
   toJneLocationSeeds,
   validateJneMasterPayload,
   type ImportDiff,
@@ -132,7 +133,9 @@ export async function main(argv: string[]): Promise<number> {
 
   // Fails closed on a malformed envelope, a blank field or a duplicate code.
   const rows = validateJneMasterPayload(payload);
-  assertExpectedRowCount(rows.length, undefined, opts.overrideRowCount);
+  // Per-namespace: the destination master is 8,322 rows and the origin master
+  // 614, so one shared constant cannot guard both.
+  assertExpectedRowCount(rows.length, expectedRowsFor(opts.kind), opts.overrideRowCount);
 
   const sourceFetchedAt = fetchedAt ? new Date(fetchedAt).toISOString() : new Date().toISOString();
   const seeds = toJneLocationSeeds(rows, { kind: opts.kind, source: opts.source, sourceFetchedAt });
@@ -172,7 +175,11 @@ export async function main(argv: string[]): Promise<number> {
   const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
   const prisma = new PrismaClient();
   try {
+    // Scoped to THIS namespace. Reading every row would make the diff compare an
+    // origin snapshot against destination rows, and `deactivatedCodes` would then
+    // list ~7,700 destinations as "absent from the snapshot" and retire them.
     const existing = (await prisma.jneLocation.findMany({
+      where: { kind: opts.kind },
       select: { code: true, rawName: true },
     })) as Array<{ code: string; rawName: string }>;
 
@@ -185,7 +192,9 @@ export async function main(argv: string[]): Promise<number> {
     // Upsert by `code`, the natural key.
     for (const seed of seeds) {
       await prisma.jneLocation.upsert({
-        where: { code: seed.code },
+        // (code, kind), never code alone: 601 origin codes also exist as
+        // destinations, 62 of them under a different name (PAXELBOX-61P).
+        where: { code_kind: { code: seed.code, kind: seed.kind } },
         create: { ...seed, sourceFetchedAt: fetchedAt },
         update: {
           rawName: seed.rawName,
@@ -207,15 +216,16 @@ export async function main(argv: string[]): Promise<number> {
     let deactivated = 0;
     if (diff.deactivatedCodes.length > 0) {
       const r = await prisma.jneLocation.updateMany({
-        where: { code: { in: diff.deactivatedCodes } },
+        where: { code: { in: diff.deactivatedCodes }, kind: opts.kind },
         data: { isActive: false },
       });
       deactivated = r.count;
     }
 
     const total = await prisma.jneLocation.count();
+    const inKind = await prisma.jneLocation.count({ where: { kind: opts.kind } });
     const mappings = await prisma.jneDistrictMapping.count();
-    console.log(`\nwritten ${written} row(s); deactivated ${deactivated}; JneLocation total ${total}`);
+    console.log(`\nwritten ${written} row(s); deactivated ${deactivated}; ${opts.kind} rows ${inKind}; JneLocation total ${total}`);
     console.log(`JneDistrictMapping rows: ${mappings} (this tool never creates mappings)`);
     return 0;
   } catch (err) {

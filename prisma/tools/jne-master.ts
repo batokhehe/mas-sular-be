@@ -214,8 +214,20 @@ export function computeImportDiff(
   };
 }
 
-/** The row count the PAXELBOX-61C snapshot contained. */
+/** The row count the PAXELBOX-61C DESTINATION snapshot contained. */
 export const EXPECTED_SANDBOX_ROWS = 8322;
+
+/** The row count the PAXELBOX-61L ORIGIN snapshot contained. */
+export const EXPECTED_SANDBOX_ORIGIN_ROWS = 614;
+
+/**
+ * The expected size of a snapshot of `kind`. The two masters are different sizes
+ * by an order of magnitude, so a single constant would either wave the origin
+ * master through or refuse it outright.
+ */
+export function expectedRowsFor(kind: JneLocationKind): number {
+  return kind === 'ORIGIN' ? EXPECTED_SANDBOX_ORIGIN_ROWS : EXPECTED_SANDBOX_ROWS;
+}
 
 /**
  * Refuse an unexpected snapshot size unless an operator overrides it. A source
