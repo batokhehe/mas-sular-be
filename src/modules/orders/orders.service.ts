@@ -173,6 +173,7 @@ export class OrdersService {
     address: {
       provinceId: string | null;
       cityId: string | null;
+      districtId: string | null;
       postalCode: string | null;
       latitude: unknown;
       longitude: unknown;
@@ -233,6 +234,10 @@ export class OrdersService {
       // the legacy fallback prices JNE identically rather than silently losing it.
       originRajaOngkirId: outlet?.village?.rajaOngkirId ?? undefined,
       destinationRajaOngkirId: address.village?.rajaOngkirId ?? undefined,
+      // PAXELBOX-61S: JNE prices by its own district-level code, resolved from
+      // JneDistrictMapping at quote time. The ID, never the name - a district
+      // name is not unique nationally.
+      destinationDistrictId: address.districtId ?? undefined,
     };
   }
 
@@ -298,6 +303,7 @@ export class OrdersService {
         // never falls back to a district, a postal code or a live search.
         originRajaOngkirId: outlet?.villageRajaOngkirId ?? undefined,
         destinationRajaOngkirId: address.village?.rajaOngkirId ?? undefined,
+        destinationDistrictId: address.districtId ?? undefined,
       };
       return { outletId: result.outletId, request, quotes: result.quotes };
     }

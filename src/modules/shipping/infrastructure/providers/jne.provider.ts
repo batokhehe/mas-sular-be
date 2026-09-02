@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ShippingProvider, ShippingQuote, ShippingRateRequest, TrackingResult } from '../../domain/shipping-provider.interface';
-import { SHIPPING_CONFIG, ShippingConfig } from '../../shipping.config';
+import { JneDestinationResolver } from '../jne-destination.resolver';
+import { SHIPPING_CONFIG, ShippingConfig, assertJneEnvironment } from '../../shipping.config';
 import {
   defaultShippingHttpClient,
   executeShippingRequest,
@@ -9,24 +10,29 @@ import {
 
 const TRACK_PATH = '/tracing/api/list/v1/cnote';
 
-/** RajaOngkir cost endpoint, relative to the configured RajaOngkir base URL. */
-const RAJAONGKIR_COST_PATH = '/calculate/domestic-cost';
-/** We ask RajaOngkir for exactly one courier. This is never widened here. */
-const COURIER = 'jne';
-/** RajaOngkir's documented `price` parameter. */
-const PRICE_MODE = 'lowest';
+/** JNE's own tariff endpoint, relative to the configured JNE base URL. */
+const PRICEDEV_PATH = '/tracing/api/pricedev';
 
-/** Minimal projection of the RajaOngkir cost response (never leaked outside). */
-interface RajaOngkirCostResponse {
-  meta?: { message?: string; code?: number; status?: string };
-  data?: Array<{
-    name?: string;
-    code?: string;
-    service?: string;
-    description?: string;
-    cost?: number | string;
-    etd?: string;
+/**
+ * JNE's tariff response. Every field arrives as a STRING or null - `price` and
+ * both ETD bounds included - so nothing here is typed as a number.
+ */
+interface JnePricedevResponse {
+  price?: Array<{
+    origin_name?: string | null;
+    destination_name?: string | null;
+    service_display?: string | null;
+    service_code?: string | null;
+    goods_type?: string | null;
+    currency?: string | null;
+    price?: string | number | null;
+    etd_from?: string | null;
+    etd_thru?: string | null;
+    times?: string | null;
   }>;
+  /** JNE reports failure in the body, not the status line: {"error":"...","status":false}. */
+  error?: string;
+  status?: boolean;
 }
 
 /**
@@ -41,136 +47,190 @@ export class JneProvider implements ShippingProvider {
   private readonly logger = new Logger('JneProvider');
   private http: ShippingHttpClient = defaultShippingHttpClient;
 
-  constructor(@Inject(SHIPPING_CONFIG) private readonly config: ShippingConfig) {}
+  constructor(
+    @Inject(SHIPPING_CONFIG) private readonly config: ShippingConfig,
+    private readonly destinations: JneDestinationResolver,
+  ) {}
 
   private get cfg() {
     return this.config.jne;
   }
 
   /**
-   * JNE quotation, sourced from RajaOngkir (PAXELBOX-45).
+   * Grams -> kilograms, the way every other JNE/Paxel call in this codebase
+   * already does it: round UP, floor of 1. Couriers bill by started kilogram, so
+   * 1,200 g is a 2 kg parcel; sending 1.2 would under-declare it. Matches
+   * JneShipmentProvider.createShipment and PaxelProvider exactly, so a quote and
+   * the booking that follows describe the same parcel.
+   */
+  private weightKg(weightGram: number): number {
+    return Math.max(1, Math.ceil(weightGram / 1000));
+  }
+
+  /**
+   * JNE quotation, from JNE's own tariff API (PAXELBOX-61S).
    *
-   * RajaOngkir is a RATE SOURCE, not a courier: the provider name stays `jne`,
-   * the quotes say `jne`, and the order the customer places says `jne`. Nothing
-   * downstream — shipment, tracking, admin, reporting — learns that the price
-   * came from a third party. Only `getRates` changed; `track()` below still
-   * talks to JNE directly, because RajaOngkir has no tracking to offer.
+   * This replaced the RajaOngkir-sourced implementation. RajaOngkir is not
+   * called here any more, is not a fallback, and neither is a mock: a quote a
+   * customer can select and pay must come from the courier that will carry the
+   * parcel. Every failure below returns NO quotes rather than a substitute.
    *
-   * Weight is sent in GRAMS. RajaOngkir takes grams natively, so unlike the
-   * JNE tariff call this replaced there is no kilogram rounding — a 1,200 g
-   * order is priced as 1,200 g rather than being rounded up to 2 kg.
-   *
-   * Dimensions are NOT sent: the documented contract accepts origin,
-   * destination, weight, courier and price only. The S/M/L box therefore
-   * continues to affect Paxel alone, exactly as before.
+   * Weight is sent in KILOGRAMS, which is what JNE documents. The RajaOngkir
+   * call this replaced sent grams natively, so the difference is real — hence an
+   * explicit, tested conversion rather than an inline expression.
    */
   async getRates(request: ShippingRateRequest): Promise<ShippingQuote[]> {
-    const ro = this.config.rajaongkir;
-    if (!ro.enabled) return this.config.allowMockRates ? this.mockRates(request) : [];
+    // A disabled courier contributes nothing — and no mock stands in for it.
+    if (!this.cfg.enabled) return [];
+    // The same boundary tracking and cancel enforce: a production courier must
+    // never spend the sandbox endpoint, and vice versa.
+    assertJneEnvironment(this.cfg);
 
-    // RajaOngkir prices by ITS OWN subdistrict ids, carried here from
-    // Village.rajaOngkirId (PAXELBOX-49B). Nothing populates them yet — the
-    // migration is unapplied and the mapping unacquired — so this is the normal
-    // path today.
-    //
-    // No quotes rather than a thrown error, deliberately: an unmapped address is
-    // an expected, permanent configuration state, not a fault. It is the same
-    // answer PaxelProvider already gives for an order that fits no supported box
-    // and the same answer this provider already gave while disabled. Throwing
-    // would make every checkout in the country raise a provider error until the
-    // backfill lands, and — if Paxel also had nothing to offer — turn a
-    // legitimate "no couriers here" into a 500.
-    //
-    // What must never happen is substituting a postal code or a guessed id: a
-    // wrong district silently misprices an order the customer then pays.
-    const origin = request.originRajaOngkirId;
-    const destination = request.destinationRajaOngkirId;
-    if (origin === undefined || destination === undefined) {
+    if (!this.cfg.username || !this.cfg.apiKey) {
+      this.logger.warn({ provider: this.name, outcome: 'skipped', reason: 'missing_jne_credentials' });
+      return [];
+    }
+    // Validated against JNE's ORIGIN master at boot (JneOriginBootValidator), so
+    // by the time a request arrives this is a code JNE actually publishes.
+    const from = this.cfg.originCode;
+    if (!from) {
+      this.logger.warn({ provider: this.name, outcome: 'skipped', reason: 'missing_jne_origin_code' });
+      return [];
+    }
+
+    // District → approved JNE destination code. Null when the district has no
+    // reviewed mapping, which is the normal state outside the approved set.
+    const thru = await this.destinations.resolve(request.destinationDistrictId);
+    if (!thru) {
       this.logger.warn({
         provider: this.name,
         outcome: 'skipped',
-        reason: 'missing_rajaongkir_village_id',
-        hasOrigin: origin !== undefined,
-        hasDestination: destination !== undefined,
+        reason: 'no_jne_destination_mapping',
+        hasDistrictId: request.destinationDistrictId !== undefined,
       });
       return [];
     }
 
+    const weight = this.weightKg(request.weightGram);
     const form = new URLSearchParams({
-      origin: String(origin),
-      destination: String(destination),
-      weight: String(Math.max(1, Math.trunc(request.weightGram))),
-      courier: COURIER,
-      price: PRICE_MODE,
+      // Credentials travel in the body because JNE's contract puts them there.
+      // They are never logged: logBase below carries codes and weight only.
+      username: this.cfg.username,
+      api_key: this.cfg.apiKey,
+      from,
+      thru,
+      weight: String(weight),
     });
 
     const { text } = await executeShippingRequest({
       http: this.http,
-      url: `${ro.baseUrl}${RAJAONGKIR_COST_PATH}`,
+      url: `${this.cfg.baseUrl}${PRICEDEV_PATH}`,
       init: {
         method: 'POST',
-        // The key travels in RajaOngkir's `key` header, never in the body or
-        // the URL, so it cannot reach a log line or an error message.
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', key: ro.apiKey ?? '' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
         body: form.toString(),
-        timeoutMs: ro.timeoutMs,
+        timeoutMs: this.cfg.timeoutMs,
       },
-      // 429 is not retried by the shared client (PAXELBOX-45A) — a daily quota
-      // does not reset inside one call. No RajaOngkir-specific retry is added.
-      maxRetry: ro.maxRetry,
+      // No retry in this phase: a tariff lookup that failed once is reported as
+      // no quotes, not hammered.
+      maxRetry: 0,
       logger: this.logger,
-      logBase: { provider: this.name, origin: String(origin), destination: String(destination), service: 'ALL' },
+      logBase: { provider: this.name, origin: from, destination: thru, service: 'RATE' },
     });
 
-    return this.mapRajaOngkirResponse(text);
+    return this.mapPricedevResponse(text, from, thru);
   }
 
   /**
-   * RajaOngkir cost response -> ShippingQuote. Private, so no raw provider
-   * response escapes this class.
+   * JNE tariff response → ShippingQuote. Private, so no raw provider response
+   * escapes this class.
    *
-   * Anything that cannot be mapped truthfully is DROPPED rather than defaulted:
-   * a missing service code or an unusable cost would otherwise become a quote
-   * the customer could select and pay.
+   * Anything that cannot be mapped truthfully is DROPPED rather than defaulted.
+   * Nothing about JNE's service vocabulary is reinterpreted: `REG15` and `REG19`
+   * stay distinct services because they are distinct to JNE, whatever the suffix
+   * turns out to mean, and `JTR<130` passes through unchanged.
    */
-  private mapRajaOngkirResponse(text: string): ShippingQuote[] {
-    let parsed: RajaOngkirCostResponse;
+  private mapPricedevResponse(text: string, from: string, thru: string): ShippingQuote[] {
+    let parsed: JnePricedevResponse;
     try {
-      parsed = JSON.parse(text) as RajaOngkirCostResponse;
+      parsed = JSON.parse(text) as JnePricedevResponse;
     } catch {
+      this.logger.warn({ provider: this.name, outcome: 'unavailable', reason: 'jne_malformed_json', origin: from, destination: thru });
       return [];
     }
-    // A non-200 envelope is a refusal, not a price list.
-    if (parsed?.meta && parsed.meta.code !== 200) return [];
 
-    return (parsed?.data ?? [])
-      .map((row) => {
-        // Defensive: `courier=jne` was requested, but a courier we did not ask
-        // for must never reach checkout labelled as JNE.
-        if (row.code && row.code.toLowerCase() !== COURIER) return null;
-        const cost = typeof row.cost === 'string' ? Number(row.cost) : row.cost;
-        if (!Number.isFinite(cost) || (cost as number) < 0) return null;
-        const service = row.service?.trim();
+    // JNE answers a refusal with HTTP 200 and {"error":"Price Not Found.","status":false}.
+    // Logged distinctly so "the courier has no tariff here" can never be read as
+    // "the courier quoted nothing", which is what a bare [] would look like.
+    if (parsed?.status === false || typeof parsed?.error === 'string') {
+      this.logger.warn({
+        provider: this.name,
+        outcome: 'unavailable',
+        reason: 'jne_error_response',
+        jneError: parsed?.error ?? '(no message)',
+        origin: from,
+        destination: thru,
+      });
+      return [];
+    }
+
+    const rows = parsed?.price;
+    if (!Array.isArray(rows)) {
+      this.logger.warn({ provider: this.name, outcome: 'unavailable', reason: 'jne_malformed_payload', origin: from, destination: thru });
+      return [];
+    }
+    if (rows.length === 0) {
+      this.logger.warn({ provider: this.name, outcome: 'unavailable', reason: 'jne_empty_price_list', origin: from, destination: thru });
+      return [];
+    }
+
+    return rows
+      .map((row): ShippingQuote | null => {
+        const service = row.service_code?.trim();
         if (!service) return null;
+        const cost = typeof row.price === 'string' ? Number(row.price) : row.price;
+        if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return null;
+
         return {
           provider: this.name,
+          // The code EXACTLY as JNE returned it — REG15 and REG19 stay distinct.
           service,
-          // `description` is RajaOngkir's human label ("Regular Service").
-          serviceName: `JNE ${row.description?.trim() || service}`,
-          estimatedDays: row.etd?.trim() || 'N/A',
-          shippingCost: Math.round(cost as number),
-        } satisfies ShippingQuote;
+          // `service_display` is JNE's own label. It is NOT unique across rows
+          // (PAXELBOX-61N saw two "REG" rows on one route), so the code is what
+          // identifies a service and the display is what a human reads.
+          serviceName: row.service_display?.trim() || service,
+          estimatedDays: this.formatEtd(row.etd_from, row.etd_thru),
+          shippingCost: Math.round(cost),
+          providerMeta: {
+            service_code: row.service_code ?? null,
+            service_display: row.service_display ?? null,
+            goods_type: row.goods_type ?? null,
+            currency: row.currency ?? null,
+            etd_from: row.etd_from ?? null,
+            etd_thru: row.etd_thru ?? null,
+            times: row.times ?? null,
+            origin_name: row.origin_name ?? null,
+            destination_name: row.destination_name ?? null,
+          },
+        };
       })
       .filter((q): q is ShippingQuote => q !== null);
   }
 
-  /** Deterministic stand-in quotes for local/dev when no JNE credentials are configured. */
-  private mockRates(request: ShippingRateRequest): ShippingQuote[] {
-    const weightKg = Math.max(1, Math.ceil(request.weightGram / 1000));
-    return [
-      { provider: this.name, service: 'REG', serviceName: 'JNE Reguler (Mock)', estimatedDays: '2-3 Days', shippingCost: 9000 * weightKg },
-      { provider: this.name, service: 'YES', serviceName: 'JNE Yakin Esok Sampai (Mock)', estimatedDays: '1 Day', shippingCost: 18000 * weightKg },
-    ];
+  /**
+   * ETD bounds → the human string `estimatedDays` carries.
+   *
+   * Returns 'N/A' when JNE sends null, which PAXELBOX-61O measured on every
+   * retail service it observed. 'N/A' is this codebase's existing word for "the
+   * courier did not say" — it is not a number, and no number is invented here.
+   * The raw bounds survive verbatim in `providerMeta` either way.
+   */
+  private formatEtd(from: string | null | undefined, thru: string | null | undefined): string {
+    const a = from?.trim();
+    const b = thru?.trim();
+    if (!a && !b) return 'N/A';
+    if (a && b) return a === b ? a : `${a}-${b}`;
+    return (a || b) as string;
   }
 
   async track(trackingNumber: string): Promise<TrackingResult> {

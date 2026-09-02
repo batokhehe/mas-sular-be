@@ -104,6 +104,8 @@ function regionFields(outlet: OutletWithRegions, address: AllocationAddress) {
     destinationDistrict: address.district ?? undefined,
     destinationVillage: address.village ?? undefined,
     destinationRajaOngkirId: address.villageRajaOngkirId ?? undefined,
+    // PAXELBOX-61S: JNE resolves its destination code from this district id.
+    destinationDistrictId: address.districtId ?? undefined,
   };
 }
 

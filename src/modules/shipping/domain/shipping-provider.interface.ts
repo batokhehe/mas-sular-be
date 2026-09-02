@@ -65,6 +65,20 @@ export interface ShippingRateRequest {
    */
   originRajaOngkirId?: number;
   destinationRajaOngkirId?: number;
+  /**
+   * The internal District id of the DESTINATION address (PAXELBOX-61S).
+   *
+   * An id, not a name: JNE prices by its own district-level destination code,
+   * and a district NAME is not unique in Indonesia - Lengkong exists in Bandung,
+   * Sukabumi and Nganjuk. Resolving by name would price one customer's parcel
+   * with another city's tariff, which is precisely the failure the parent-aware
+   * mapping was built to prevent.
+   *
+   * ABSENT means the caller could not identify the district. The JNE provider
+   * then returns no quotes; it must never fall back to a postal code, a village
+   * id or a guessed JNE code.
+   */
+  destinationDistrictId?: string;
 }
 
 /** Legacy single-rate shape (kept for the /shipping/rates endpoint and the
@@ -94,6 +108,20 @@ export interface ShippingQuote {
    * (JNE) or when Paxel's response didn't include it.
    */
   fixedSize?: string;
+  /**
+   * Verbatim provider fields that this contract has nowhere else to put
+   * (PAXELBOX-61S). Carried, never interpreted.
+   *
+   * JNE's tariff response returns `goods_type`, `currency`, `times`, the two ETD
+   * bounds and the raw service code/display; `estimatedDays` can hold none of
+   * that faithfully, and PAXELBOX-61O measured `etd_from`/`etd_thru` as null on
+   * every retail service it saw. Dropping them would destroy the only evidence
+   * of what the courier actually said, so they ride along as strings exactly as
+   * received - a null stays null, and no suffix (REG15 vs REG19) is rewritten.
+   *
+   * Display-layer data only. Nothing prices, books or decides from it.
+   */
+  providerMeta?: Record<string, string | null>;
 }
 
 export interface TrackingResult {
